@@ -125,7 +125,7 @@ unsigned char RF_TX_Data(unsigned char* tx_buff);
 unsigned char RF_RX_Data(unsigned char* rx_buff);
 
 /* User configuration */
-#define RF_TX_Power         C_RF7dBm
+#define RF_TX_Power         C_RF13dBm   /* 最大功率 13dBm，增强传输距离 */
 #define RF_BAUD             C_DR_250K
 #define RF_PACKET_SIZE      8
 

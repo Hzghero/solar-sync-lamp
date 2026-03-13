@@ -260,8 +260,8 @@ void XL2400T_Init(void)
   RF_SPI_Write_Reg(W_REGISTER + SETUP_AW, 0xAF);
   RF_Set_Address(RF_Test_Adrress);
 
-  /* Data rate */
-  RF_SPI_Write_Reg(W_REGISTER + RF_SETUP, C_DR_250K);
+  /* Data rate: 1Mbps (v1.8.0 优化，比 250Kbps 快 4 倍) */
+  RF_SPI_Write_Reg(W_REGISTER + RF_SETUP, C_DR_1M);
 
   /* RX params */
   RF_SPI_Write_Reg(W_REGISTER + EN_RXADDR, 0x01);

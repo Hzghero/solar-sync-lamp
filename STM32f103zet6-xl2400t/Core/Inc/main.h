@@ -43,7 +43,7 @@ extern "C" {
 /* USER CODE BEGIN EC */
 
 /* Firmware version (follow PROJECT_RULES) */
-#define FW_VERSION  "v1.7.3-SINGLE-FW-SYNC"
+#define FW_VERSION  "v1.8.2-6MS-COMP-13DBM"
 
 /* USER CODE END EC */
 

@@ -32,11 +32,12 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* v1.7.3: 单固件多节点，添加传输延迟补偿 */
+/* v1.8.1: 测试版 - 取消传输延迟补偿，观察原始同步效果 */
 #define SYNC_CYCLE_MS       900U    /* 同步周期 900ms */
 #define SYNC_LED_ON_MS      100U    /* LED 亮灯时间 100ms */
 #define SYNC_TX_TIME_MS     450U    /* TX 发送时间：周期中点，所有节点相同 */
-#define SYNC_TX_DELAY_MS    10U     /* 估计的传输+处理延迟，用于补偿 */
+#define SYNC_TX_DELAY_MS    6U      /* 传输延迟补偿：基于测试结果(11ms/2≈6ms) */
+#define SYNC_PKT_SIZE       4U      /* 精简包：AA 55 + 2字节相位 */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -79,8 +80,8 @@ static void LED_Blink(int times, int delay_ms);
 static void SyncTime_Update(void);
 static void SyncLamp_Update(void);
 static void BuildSyncPacket(uint8_t *pkt);
-static void ParseSyncPacket(const uint8_t *pkt, uint16_t *cycle, uint16_t *phase_ms);
-static void Sync_AdjustFromPacket(uint16_t rx_cycle, uint16_t rx_phase_ms);
+static uint16_t ParseSyncPacket(const uint8_t *pkt);
+static void Sync_AdjustFromPacket(uint16_t rx_phase_ms);
 static void Sync_MainLoop(void);
 /* USER CODE END PFP */
 
@@ -428,7 +429,7 @@ static void SyncLamp_Update(void)
   }
 }
 
-/* 构造 8 字节同步包：AA 55 + cycle(2) + phase_code(2) + flags + reserved */
+/* 构造 4 字节精简同步包：AA 55 + 2字节相位（1ms 分辨率） */
 static void BuildSyncPacket(uint8_t *pkt)
 {
   /* 补偿传输延迟：发送时预估接收方收到时的相位 */
@@ -436,34 +437,24 @@ static void BuildSyncPacket(uint8_t *pkt)
   if (compensated_phase >= SYNC_CYCLE_MS) {
     compensated_phase -= SYNC_CYCLE_MS;
   }
-  uint16_t phase_code = compensated_phase / 4U; /* 4ms 分辨率 */
 
   pkt[0] = 0xAA;
   pkt[1] = 0x55;
-  pkt[2] = (uint8_t)(g_cycle >> 8);
-  pkt[3] = (uint8_t)(g_cycle & 0xFF);
-  pkt[4] = (uint8_t)(phase_code >> 8);
-  pkt[5] = (uint8_t)(phase_code & 0xFF);
-  pkt[6] = 0x00; /* flags 预留 */
-  pkt[7] = 0x00; /* reserved */
+  pkt[2] = (uint8_t)(compensated_phase >> 8);   /* 相位高字节，1ms 分辨率 */
+  pkt[3] = (uint8_t)(compensated_phase & 0xFF); /* 相位低字节 */
 }
 
-/* 解析同步包，输出周期和毫秒相位；异常包（头不对）时输出 0 */
-static void ParseSyncPacket(const uint8_t *pkt, uint16_t *cycle, uint16_t *phase_ms)
+/* 解析 4 字节精简同步包，输出毫秒相位；异常包时输出 0xFFFF */
+static uint16_t ParseSyncPacket(const uint8_t *pkt)
 {
   if (pkt[0] != 0xAA || pkt[1] != 0x55) {
-    *cycle = 0;
-    *phase_ms = 0;
-    return;
+    return 0xFFFF; /* 无效包 */
   }
-  uint16_t c = ((uint16_t)pkt[2] << 8) | pkt[3];
-  uint16_t phase_code = ((uint16_t)pkt[4] << 8) | pkt[5];
-  *cycle = c;
-  *phase_ms = (uint16_t)(phase_code * 4U);
+  return ((uint16_t)pkt[2] << 8) | pkt[3]; /* 直接是 ms，无需乘法 */
 }
 
 /* 根据收到的同步包对本地时间做小步调整 */
-static void Sync_AdjustFromPacket(uint16_t rx_cycle, uint16_t rx_phase_ms)
+static void Sync_AdjustFromPacket(uint16_t rx_phase_ms)
 {
   /* 非法包直接忽略 */
   if (rx_phase_ms >= 900U) {
@@ -545,7 +536,7 @@ static void Sync_MainLoop(void)
     }
 
     BuildSyncPacket(RF_TX_Buf);
-    if (RF_Link_Send(RF_TX_Buf, RF_PACKET_SIZE) == 0) {
+    if (RF_Link_Send(RF_TX_Buf, SYNC_PKT_SIZE) == 0) {
       DebugPrint("TX@");
       DebugPrintDec(g_phase_ms);
       DebugPrint("\r\n");
@@ -562,14 +553,12 @@ static void Sync_MainLoop(void)
   if (g_rf_mode == 0) {
     uint8_t rx_len = 0;
     if (RF_Link_PollReceive(RF_RX_Buf, &rx_len) == 1) {
-      uint16_t rx_cycle = 0;
-      uint16_t rx_phase_ms = 0;
-      ParseSyncPacket(RF_RX_Buf, &rx_cycle, &rx_phase_ms);
+      uint16_t rx_phase_ms = ParseSyncPacket(RF_RX_Buf);
 
       if (rx_phase_ms < SYNC_CYCLE_MS) {
         DebugPrint("RX: ph=");
         DebugPrintDec(rx_phase_ms);
-        Sync_AdjustFromPacket(rx_cycle, rx_phase_ms);
+        Sync_AdjustFromPacket(rx_phase_ms);
         SyncLamp_Update();  /* 调整相位后立即更新 LED，避免跳过边沿 */
         HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
       }

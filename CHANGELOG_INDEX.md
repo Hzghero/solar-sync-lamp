@@ -21,3 +21,6 @@
 | v1.7.1 | 2026-03-13 | 修正相位差规范化边界：delta >= 450 才减 900，修复 448ms 差异无法收敛的问题 | Core/Src/main.c, Core/Inc/main.h |
 | v1.7.2 | 2026-03-13 | 所有节点使用相同的固定 TX 时间 (450ms)：彻底解决"假同步"问题，TX 时间不同导致相位收敛到不同参考点 | Core/Src/main.c, Core/Inc/main.h |
 | v1.7.3 | 2026-03-13 | 添加传输延迟补偿 (10ms)：发送时预估接收方收到时的相位，进一步减小同步误差 | Core/Src/main.c, Core/Inc/main.h |
+| v1.8.0 | 2026-03-13 | 优化版：RF速率提升至1Mbps、相位分辨率提高到1ms（去除4ms量化）、传输延迟补偿减至5ms | Core/Src/main.c, Core/Inc/main.h, Core/Src/XL2400T.c |
+| v1.8.1 | 2026-03-13 | 测试版：取消传输延迟补偿(SYNC_TX_DELAY_MS=0)，观察原始同步效果 | Core/Src/main.c, Core/Inc/main.h |
+| v1.8.2 | 2026-03-13 | 优化版：传输延迟补偿6ms（11ms/2）、发射功率提升至最大13dBm | Core/Src/main.c, Core/Inc/main.h, Core/Inc/XL2400T.h |
