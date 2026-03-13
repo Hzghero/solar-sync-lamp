@@ -43,7 +43,7 @@ extern "C" {
 /* USER CODE BEGIN EC */
 
 /* Firmware version (follow PROJECT_RULES) */
-#define FW_VERSION  "v1.5.1-XL2400T-SYNC-PHASE"
+#define FW_VERSION  "v1.6.4-SINGLE-FW-MULTINODE"
 
 /* USER CODE END EC */
 

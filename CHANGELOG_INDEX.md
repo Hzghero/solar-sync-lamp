@@ -11,3 +11,8 @@
 | v1.4.0 | 2026-03-09 | 集成官方 XL2400T DEMO、三线软件 SPI 打通收发，新增通用接口 `RF_Link_*`，后续正式同步协议统一使用该接口 | Core/Src/XL2400T.c, Core/Src/rf_xl2400.c, Core/Src/main.c, PROJECT_RULES.md |
 | v1.5.0 | 2026-03-09 | 增加本地 900ms 周期时间基准与 LED_DRV 同步闪烁，实现周期/相位同步信标包（SYNC TX/RX 打印） | Core/Src/main.c, Core/Inc/main.h |
 | v1.5.1 | 2026-03-09 | 修正同步算法，基于周期内相位差（忽略绝对 cycle）做小步调整，避免时间轴跳变，便于多节点渐进对时 | Core/Src/main.c, Core/Inc/main.h |
+| v1.6.0 | 2026-03-13 | 单固件多节点：删除编译时角色选择，每节点既发又收，随机错峰 TX（基于 UID+ADC 生成偏移） | Core/Src/main.c, Core/Inc/main.h |
+| v1.6.1 | 2026-03-13 | 修正 RX 频道配置：XL2400T TX=76/RX=75 相邻频道才能互通 | Core/Src/main.c, Core/Inc/main.h |
+| v1.6.2 | 2026-03-13 | 修正启动时序：时间基准移到耗时初始化之后；增加 LED ON/OFF 边沿打印调试 | Core/Src/main.c, Core/Inc/main.h |
+| v1.6.3 | 2026-03-13 | 修正 LED 时序：在 SyncTime_Update 中检测周期边界并立即控制 LED，避免主循环延迟导致错过边沿 | Core/Src/main.c, Core/Inc/main.h |
+| v1.6.4 | 2026-03-13 | 使用时间戳控制 LED：记录点亮时刻，确保至少亮 100ms 后才熄灭，彻底解决主循环延迟问题 | Core/Src/main.c, Core/Inc/main.h |

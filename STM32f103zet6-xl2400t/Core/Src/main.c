@@ -32,8 +32,12 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* 0=RX板 1=TX板  双板收发测试时，改此宏后分别编译烧录 */
-#define XL2400_LOOPBACK_MODE  0
+/* v1.6.0: 单固件多节点，不再需要编译时选角色 */
+#define SYNC_CYCLE_MS       900U    /* 同步周期 900ms */
+#define SYNC_LED_ON_MS      100U    /* LED 亮灯时间 100ms */
+#define SYNC_RX_WINDOW_MS   200U    /* 优先 RX 窗口：0-200ms */
+#define SYNC_TX_BASE_MS     200U    /* TX 发送基准时间 */
+#define SYNC_TX_RAND_MAX_MS 400U    /* TX 随机偏移范围 0-400ms */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -47,15 +51,21 @@ ADC_HandleTypeDef hadc1;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-/* XL2400T demo TX/RX buffers (8-byte payload) */
-static uint8_t RF_TX_Test[RF_PACKET_SIZE]   = {1,2,3,4,5,6,7,8};
-static uint8_t RF_RX_Tset[RF_PACKET_SIZE]   = {0};
+/* XL2400T TX/RX buffers (8-byte payload) */
+static uint8_t RF_TX_Buf[RF_PACKET_SIZE]   = {0};
+static uint8_t RF_RX_Buf[RF_PACKET_SIZE]   = {0};
 
 /* 同步闪灯本地时间：900ms 周期 (100ms ON + 800ms OFF) */
 static uint32_t g_cycle = 0;          /* 周期计数 */
 static uint16_t g_phase_ms = 0;       /* 周期内偏移 0..899 ms */
 static uint32_t g_last_tick_ms = 0;   /* 上一次更新时间的 HAL_GetTick() 值 */
-static uint32_t g_last_tx_cycle = (uint32_t)-1; /* 上一次已经广播过的周期号（仅 TX 板使用） */
+static uint32_t g_last_tx_cycle = (uint32_t)-1; /* 上一次已经广播过的周期号 */
+
+/* v1.6.0: 单固件多节点 - 随机 TX 偏移 */
+static uint16_t g_tx_offset_ms = 0;   /* 本节点的 TX 发送偏移量 (0 ~ SYNC_TX_RAND_MAX_MS) */
+static uint8_t  g_rf_mode = 0;        /* 0=RX, 1=TX (当前 RF 模式) */
+static uint8_t  g_led_state = 0;      /* LED 状态，用于边沿检测 */
+static uint32_t g_led_on_tick = 0;    /* LED 点亮的时间戳，用于保证最少亮 100ms */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -66,12 +76,15 @@ static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 static void DebugPrint(const char *s);
 static void DebugPrintHex(const uint8_t *buf, uint8_t len);
+static void DebugPrintDec(uint16_t val);
 static void LED_Blink(int times, int delay_ms);
 static void SyncTime_Update(void);
 static void SyncLamp_Update(void);
 static void BuildSyncPacket(uint8_t *pkt);
 static void ParseSyncPacket(const uint8_t *pkt, uint16_t *cycle, uint16_t *phase_ms);
 static void Sync_AdjustFromPacket(uint16_t rx_cycle, uint16_t rx_phase_ms);
+static uint16_t GenerateRandomOffset(void);
+static void Sync_MainLoop(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -113,23 +126,27 @@ int main(void)
   /* USER CODE BEGIN 2 */
   DebugPrint("\r\n[FW] " FW_VERSION "\r\n");
 
-  /* 初始化本地时间基准 */
-  g_last_tick_ms = HAL_GetTick();
-  g_cycle = 0;
-  g_phase_ms = 0;
-
   /* XL2400T 3-wire SPI + RF init（通过通用接口） */
   RF_Link_Init();
 
-#if (XL2400_LOOPBACK_MODE == 0)
-  DebugPrint("=== XL2400T DEMO - RX Mode ===\r\n");
-  RF_Link_ConfigRx(76 - 1);  /* Demo: TX=76, RX=75 */
-#else
-  DebugPrint("=== XL2400T DEMO - TX Mode ===\r\n");
-  RF_Link_ConfigTx(76);
-#endif
+  /* v1.6.0: 生成随机 TX 偏移，避免多节点同时发送 */
+  g_tx_offset_ms = GenerateRandomOffset();
+  DebugPrint("=== SINGLE-FW MULTINODE ===\r\n");
+  DebugPrint("TX offset: ");
+  DebugPrintDec(g_tx_offset_ms);
+  DebugPrint(" ms\r\n");
+
+  /* 默认进入 RX 模式 (XL2400T: TX=76, RX=75) */
+  RF_Link_ConfigRx(75);
+  g_rf_mode = 0;
 
   LED_Blink(3, 150);
+
+  /* 在所有耗时初始化完成后，再初始化时间基准（避免启动延迟导致相位跳变） */
+  g_last_tick_ms = HAL_GetTick();
+  g_cycle = 0;
+  g_phase_ms = 0;
+  g_led_state = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -139,41 +156,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* 更新本地时间并驱动同步闪灯 LED */
-    SyncTime_Update();
-    SyncLamp_Update();
-
-#if (XL2400_LOOPBACK_MODE == 0)
-    /* RX board (通过通用接口轮询收包) */
-    uint8_t rx_len = 0;
-    if (RF_Link_PollReceive(RF_RX_Tset, &rx_len) == 1) {
-      uint16_t rx_cycle = 0;
-      uint16_t rx_phase_ms = 0;
-      ParseSyncPacket(RF_RX_Tset, &rx_cycle, &rx_phase_ms);
-      DebugPrint("SYNC RX: cycle=");
-      DebugPrintHex((uint8_t *)&rx_cycle, 2);
-      DebugPrint(" phase(ms)=");
-      DebugPrintHex((uint8_t *)&rx_phase_ms, 2);
-      DebugPrint(" raw: ");
-      DebugPrintHex(RF_RX_Tset, rx_len);
-      DebugPrint("\r\n");
-      HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-      Sync_AdjustFromPacket(rx_cycle, rx_phase_ms);
-    }
-#else
-    /* TX board（通过通用接口发同步包：每周期一次，在灭灯阶段前段广播） */
-    if (g_cycle != g_last_tx_cycle && g_phase_ms >= 120U && g_phase_ms < 220U) {
-      uint8_t pkt[RF_PACKET_SIZE];
-      BuildSyncPacket(pkt);
-      if (RF_Link_Send(pkt, RF_PACKET_SIZE) == 0) {
-        DebugPrint("SYNC TX packet\r\n");
-      } else {
-        DebugPrint("SYNC TX error\r\n");
-      }
-      g_last_tx_cycle = g_cycle;
-      HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-    }
-#endif
+    /* v1.6.0: 单固件多节点主循环 */
+    Sync_MainLoop();
   }
   /* USER CODE END 3 */
 }
@@ -377,6 +361,22 @@ static void DebugPrintHex(const uint8_t *buf, uint8_t len)
   }
 }
 
+static void DebugPrintDec(uint16_t val)
+{
+  char buf[6];
+  int i = 5;
+  buf[i] = '\0';
+  if (val == 0) {
+    buf[--i] = '0';
+  } else {
+    while (val > 0 && i > 0) {
+      buf[--i] = '0' + (val % 10);
+      val /= 10;
+    }
+  }
+  DebugPrint(&buf[i]);
+}
+
 /* 更新本地 900ms 周期时间：根据 HAL_GetTick 计算经过的毫秒数 */
 static void SyncTime_Update(void)
 {
@@ -388,15 +388,48 @@ static void SyncTime_Update(void)
   g_last_tick_ms = now;
 
   uint32_t total = g_phase_ms + delta;
-  g_cycle += total / 900U;
-  g_phase_ms = (uint16_t)(total % 900U);
+  uint32_t new_cycles = total / SYNC_CYCLE_MS;
+  g_cycle += new_cycles;
+  g_phase_ms = (uint16_t)(total % SYNC_CYCLE_MS);
+
+  /* 检测周期边界：如果跨越了周期起点，立即点亮 LED 并记录时间戳 */
+  if (new_cycles > 0) {
+    HAL_GPIO_WritePin(LED_DRV_GPIO_Port, LED_DRV_Pin, GPIO_PIN_SET);
+    g_led_on_tick = now;  /* 记录点亮时间戳 */
+    if (g_led_state == 0) {
+      DebugPrint("LED ON @0\r\n");
+    }
+    g_led_state = 1;
+  }
 }
 
-/* 根据本地相位控制同步闪灯：前 100ms 亮，其余时间灭 */
+/* 根据本地相位控制同步闪灯：使用时间戳确保 LED 至少亮 100ms */
 static void SyncLamp_Update(void)
 {
-  GPIO_PinState state = (g_phase_ms < 100U) ? GPIO_PIN_SET : GPIO_PIN_RESET;
-  HAL_GPIO_WritePin(LED_DRV_GPIO_Port, LED_DRV_Pin, state);
+  uint32_t now = HAL_GetTick();
+  
+  if (g_led_state == 1) {
+    /* LED 当前是亮的，检查是否已经亮够 100ms */
+    uint32_t on_duration = now - g_led_on_tick;
+    if (on_duration >= SYNC_LED_ON_MS) {
+      /* 已经亮够 100ms，可以熄灭 */
+      HAL_GPIO_WritePin(LED_DRV_GPIO_Port, LED_DRV_Pin, GPIO_PIN_RESET);
+      DebugPrint("LED OFF@");
+      DebugPrintDec((uint16_t)on_duration);
+      DebugPrint("\r\n");
+      g_led_state = 0;
+    }
+  } else {
+    /* LED 当前是灭的，根据相位判断是否需要亮 */
+    if (g_phase_ms < SYNC_LED_ON_MS) {
+      HAL_GPIO_WritePin(LED_DRV_GPIO_Port, LED_DRV_Pin, GPIO_PIN_SET);
+      g_led_on_tick = now;
+      DebugPrint("LED ON @");
+      DebugPrintDec(g_phase_ms);
+      DebugPrint("\r\n");
+      g_led_state = 1;
+    }
+  }
 }
 
 /* 构造 8 字节同步包：AA 55 + cycle(2) + phase_code(2) + flags + reserved */
@@ -489,6 +522,83 @@ static void LED_Blink(int times, int delay_ms)
     HAL_Delay(delay_ms);
     HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
     HAL_Delay(delay_ms);
+  }
+}
+
+/* v1.6.0: 用 ADC 噪声和芯片 UID 生成随机偏移量 */
+static uint16_t GenerateRandomOffset(void)
+{
+  uint32_t seed = 0;
+
+  /* 读取 STM32 唯一 ID (96-bit) 的一部分 */
+  seed ^= *((uint32_t *)0x1FFFF7E8);
+  seed ^= *((uint32_t *)0x1FFFF7EC);
+  seed ^= *((uint32_t *)0x1FFFF7F0);
+
+  /* 叠加 ADC 噪声（多次采样取低位） */
+  for (int i = 0; i < 8; i++) {
+    HAL_ADC_Start(&hadc1);
+    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
+      seed ^= (HAL_ADC_GetValue(&hadc1) & 0x0F) << (i * 4);
+    }
+    HAL_ADC_Stop(&hadc1);
+  }
+
+  /* 简单 LCG 混淆一下 */
+  seed = seed * 1103515245U + 12345U;
+
+  /* 取模得到 0 ~ SYNC_TX_RAND_MAX_MS 范围 */
+  return (uint16_t)(seed % (SYNC_TX_RAND_MAX_MS + 1));
+}
+
+/* v1.6.0: 单固件多节点主循环状态机 */
+static void Sync_MainLoop(void)
+{
+  /* 更新本地时间并驱动同步闪灯 LED */
+  SyncTime_Update();
+  SyncLamp_Update();
+
+  /* 计算本周期的 TX 发送时间点 */
+  uint16_t tx_time = SYNC_TX_BASE_MS + g_tx_offset_ms;
+
+  /* 判断是否到了本周期的发送时间（且本周期尚未发送） */
+  if (g_cycle != g_last_tx_cycle && g_phase_ms >= tx_time && g_phase_ms < (tx_time + 50U)) {
+    /* 切换到 TX 模式发送同步包 */
+    if (g_rf_mode != 1) {
+      RF_Link_ConfigTx(76);
+      g_rf_mode = 1;
+    }
+
+    BuildSyncPacket(RF_TX_Buf);
+    if (RF_Link_Send(RF_TX_Buf, RF_PACKET_SIZE) == 0) {
+      DebugPrint("TX@");
+      DebugPrintDec(g_phase_ms);
+      DebugPrint("\r\n");
+    }
+    g_last_tx_cycle = g_cycle;
+    HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+
+    /* 发送完立刻切回 RX 模式 (XL2400T: RX=75) */
+    RF_Link_ConfigRx(75);
+    g_rf_mode = 0;
+  }
+
+  /* RX 模式下轮询接收 */
+  if (g_rf_mode == 0) {
+    uint8_t rx_len = 0;
+    if (RF_Link_PollReceive(RF_RX_Buf, &rx_len) == 1) {
+      uint16_t rx_cycle = 0;
+      uint16_t rx_phase_ms = 0;
+      ParseSyncPacket(RF_RX_Buf, &rx_cycle, &rx_phase_ms);
+
+      if (rx_phase_ms < SYNC_CYCLE_MS) {
+        DebugPrint("RX: ph=");
+        DebugPrintDec(rx_phase_ms);
+        Sync_AdjustFromPacket(rx_cycle, rx_phase_ms);
+        SyncLamp_Update();  /* 调整相位后立即更新 LED，避免跳过边沿 */
+        HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+      }
+    }
   }
 }
 /* USER CODE END 4 */
