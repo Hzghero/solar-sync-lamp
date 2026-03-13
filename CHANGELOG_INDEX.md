@@ -16,3 +16,8 @@
 | v1.6.2 | 2026-03-13 | 修正启动时序：时间基准移到耗时初始化之后；增加 LED ON/OFF 边沿打印调试 | Core/Src/main.c, Core/Inc/main.h |
 | v1.6.3 | 2026-03-13 | 修正 LED 时序：在 SyncTime_Update 中检测周期边界并立即控制 LED，避免主循环延迟导致错过边沿 | Core/Src/main.c, Core/Inc/main.h |
 | v1.6.4 | 2026-03-13 | 使用时间戳控制 LED：记录点亮时刻，确保至少亮 100ms 后才熄灭，彻底解决主循环延迟问题 | Core/Src/main.c, Core/Inc/main.h |
+| v1.6.5 | 2026-03-13 | 添加 TX 随机抖动（每周期 0-99ms）：避免同步后两节点 TX 时间重叠导致持续碰撞 | Core/Src/main.c, Core/Inc/main.h |
+| v1.7.0 | 2026-03-13 | 稳定版：恢复固定 TX 时间（移除随机抖动），同步后即使碰撞也不影响 LED 同步效果 | Core/Src/main.c, Core/Inc/main.h |
+| v1.7.1 | 2026-03-13 | 修正相位差规范化边界：delta >= 450 才减 900，修复 448ms 差异无法收敛的问题 | Core/Src/main.c, Core/Inc/main.h |
+| v1.7.2 | 2026-03-13 | 所有节点使用相同的固定 TX 时间 (450ms)：彻底解决"假同步"问题，TX 时间不同导致相位收敛到不同参考点 | Core/Src/main.c, Core/Inc/main.h |
+| v1.7.3 | 2026-03-13 | 添加传输延迟补偿 (10ms)：发送时预估接收方收到时的相位，进一步减小同步误差 | Core/Src/main.c, Core/Inc/main.h |
