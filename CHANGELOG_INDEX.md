@@ -1,0 +1,13 @@
+# 修改索引总表
+
+| 版本号 | 日期 | 修改要点 | 关联文件 |
+|--------|------|----------|----------|
+| v1.0.0 | 2025-03-09 | 初始化：规则文件、索引表、规格书 | PROJECT_RULES.md, CHANGELOG_INDEX.md, SPECIFICATION.md |
+| v1.1.0 | 2025-03-09 | MCU/无线/电源/过放过充/滞回/IO 分配/积木化 | SPECIFICATION.md |
+| v1.2.0 | 2025-03-09 | 无线同步协议、XL2400 驱动移植、初步通讯验证 | docs/, drivers/, firmware/, XL2400T data/ |
+| v1.3.0 | 2025-03-12 | 双板收发环回测试、LED/串口反馈 | Core/Src/main.c, docs/LOOPBACK_TEST.md |
+| v1.3.1 | 2025-03-12 | 修正 XL2400T RX/TX 模式切换（CFG_TOP 寄存器） | drivers/xl2400/xl2400.c |
+| v1.3.2 | 2025-03-12 | 实现 Port 层、修正 CE 控制（CFG_TOP bit 6）、禁用 EN_AA | Core/Src/main.c, drivers/xl2400/xl2400.c, docs/XL240T_CE_FIX_v1.3.2.md |
+| v1.4.0 | 2026-03-09 | 集成官方 XL2400T DEMO、三线软件 SPI 打通收发，新增通用接口 `RF_Link_*`，后续正式同步协议统一使用该接口 | Core/Src/XL2400T.c, Core/Src/rf_xl2400.c, Core/Src/main.c, PROJECT_RULES.md |
+| v1.5.0 | 2026-03-09 | 增加本地 900ms 周期时间基准与 LED_DRV 同步闪烁，实现周期/相位同步信标包（SYNC TX/RX 打印） | Core/Src/main.c, Core/Inc/main.h |
+| v1.5.1 | 2026-03-09 | 修正同步算法，基于周期内相位差（忽略绝对 cycle）做小步调整，避免时间轴跳变，便于多节点渐进对时 | Core/Src/main.c, Core/Inc/main.h |

@@ -1,0 +1,49 @@
+# Keil MDK-ARM build outputs
+*.o
+*.d
+*.axf
+*.hex
+*.bin
+*.map
+*.lst
+*.crf
+*.dep
+*.htm
+*.lnp
+*.build_log.htm
+*.sct
+/MDK-ARM/**/Objects/
+/MDK-ARM/**/Listings/
+/MDK-ARM/**/*.uvguix.*
+/MDK-ARM/RTE/
+
+# STM32CubeIDE
+/Debug/
+/Release/
+*.launch
+
+# STM32CubeMX backup
+*.ioc.bak
+/Src/
+/Inc/
+
+# IDE settings (keep .uvprojx but ignore user-specific)
+*.uvoptx
+.settings/
+.cproject
+.project
+
+# OS generated
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# Python cache (if any scripts)
+__pycache__/
+*.pyc

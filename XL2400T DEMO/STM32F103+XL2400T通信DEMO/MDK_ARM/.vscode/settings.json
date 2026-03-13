@@ -1,0 +1,9 @@
+{
+    "files.associations": {
+        "system_clock.h": "c",
+        "usart1.h": "c",
+        "main.h": "c",
+        "user_led.h": "c",
+        "xl2400p.h": "c"
+    }
+}
