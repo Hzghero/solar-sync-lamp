@@ -43,7 +43,7 @@ extern "C" {
 /* USER CODE BEGIN EC */
 
 /* Firmware version (follow PROJECT_RULES) */
-#define FW_VERSION  "v1.9.0-HSE-IWDG"
+#define FW_VERSION  "v2.0.0-PWM-BOOST"
 
 /* USER CODE END EC */
 
@@ -51,6 +51,8 @@ extern "C" {
 /* USER CODE BEGIN EM */
 
 /* USER CODE END EM */
+
+void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
@@ -62,6 +64,8 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define LED_DRV_Pin GPIO_PIN_2
 #define LED_DRV_GPIO_Port GPIOA
+#define BOOST_EN_Pin GPIO_PIN_3
+#define BOOST_EN_GPIO_Port GPIOA
 #define RF_CSN_Pin GPIO_PIN_4
 #define RF_CSN_GPIO_Port GPIOA
 #define RF_SCK_Pin GPIO_PIN_5

@@ -24,6 +24,15 @@
 | v1.8.0 | 2026-03-13 | 优化版：RF速率提升至1Mbps、相位分辨率提高到1ms（去除4ms量化）、传输延迟补偿减至5ms | Core/Src/main.c, Core/Inc/main.h, Core/Src/XL2400T.c |
 | v1.8.1 | 2026-03-13 | 测试版：取消传输延迟补偿(SYNC_TX_DELAY_MS=0)，观察原始同步效果 | Core/Src/main.c, Core/Inc/main.h |
 | v1.8.2 | 2026-03-13 | 优化版：传输延迟补偿6ms（11ms/2）、发射功率提升至最大13dBm | Core/Src/main.c, Core/Inc/main.h, Core/Inc/XL2400T.h |
+| v1.9.0 | 2026-03-14 | 添加 HSE 外部晶振 + IWDG 看门狗（1.6s 超时自动复位） | Core/Src/main.c, Core/Inc/main.h, .ioc |
+
+---
+
+## 规格书更新记录
+
+| 版本 | 日期 | 修改要点 |
+|------|------|----------|
+| v1.2.0 | 2026-03-14 | LED 驱动改为电感升压方式；PA2 改为 TIM PWM 输出 124kHz 60%；新增 PA3 (BOOST_EN) 升压使能；PA1 预留电池检测 |
 
 ---
 

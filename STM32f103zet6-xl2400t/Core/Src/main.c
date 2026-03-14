@@ -50,6 +50,8 @@ ADC_HandleTypeDef hadc1;
 
 IWDG_HandleTypeDef hiwdg;
 
+TIM_HandleTypeDef htim2;
+
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
@@ -75,6 +77,7 @@ static void MX_GPIO_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_IWDG_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 static void DebugPrint(const char *s);
 static void DebugPrintHex(const uint8_t *buf, uint8_t len);
@@ -125,8 +128,14 @@ int main(void)
   MX_ADC1_Init();
   MX_USART1_UART_Init();
   MX_IWDG_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   DebugPrint("\r\n[FW] " FW_VERSION "\r\n");
+
+  /* v2.0.0: 启用升压电路供电 (BOOST_EN = HIGH) */
+  HAL_Delay(100);  /* 等待时钟稳定 */
+  HAL_GPIO_WritePin(BOOST_EN_GPIO_Port, BOOST_EN_Pin, GPIO_PIN_SET);
+  DebugPrint("BOOST_EN: HIGH\r\n");
 
   /* XL2400T 3-wire SPI + RF init（通过通用接口） */
   RF_Link_Init();
@@ -136,12 +145,21 @@ int main(void)
   DebugPrint("TX time: ");
   DebugPrintDec(SYNC_TX_TIME_MS);
   DebugPrint(" ms (fixed)\r\n");
+  DebugPrint("LED: PWM 124kHz 60%\r\n");
 
   /* 默认进入 RX 模式 (XL2400T: TX=76, RX=75) */
   RF_Link_ConfigRx(75);
   g_rf_mode = 0;
 
-  LED_Blink(3, 150);
+  /* 测试 LED 升压驱动：闪烁 3 次 */
+  for (int i = 0; i < 3; i++) {
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);  /* 启动 PWM -> LED 亮 */
+    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+    HAL_Delay(150);
+    HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);   /* 停止 PWM -> LED 灭 */
+    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+    HAL_Delay(150);
+  }
 
   /* 在所有耗时初始化完成后，再初始化时间基准（避免启动延迟导致相位跳变） */
   g_last_tick_ms = HAL_GetTick();
@@ -291,6 +309,55 @@ static void MX_IWDG_Init(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 192;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 115;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_ENABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+  HAL_TIM_MspPostInit(&htim2);
+
+}
+
+/**
   * @brief USART1 Initialization Function
   * @param None
   * @retval None
@@ -340,23 +407,16 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, LED_DRV_Pin|RF_CSN_Pin|RF_SCK_Pin|RF_DATA_Pin
+  HAL_GPIO_WritePin(GPIOA, BOOST_EN_Pin|RF_CSN_Pin|RF_SCK_Pin|RF_DATA_Pin
                           |CHG_MOS_Pin|DIV_MOS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : LED_DRV_Pin */
-  GPIO_InitStruct.Pin = LED_DRV_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-  HAL_GPIO_Init(LED_DRV_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : RF_CSN_Pin RF_SCK_Pin RF_DATA_Pin CHG_MOS_Pin
-                           DIV_MOS_Pin */
-  GPIO_InitStruct.Pin = RF_CSN_Pin|RF_SCK_Pin|RF_DATA_Pin|CHG_MOS_Pin
-                          |DIV_MOS_Pin;
+  /*Configure GPIO pins : BOOST_EN_Pin RF_CSN_Pin RF_SCK_Pin RF_DATA_Pin
+                           CHG_MOS_Pin DIV_MOS_Pin */
+  GPIO_InitStruct.Pin = BOOST_EN_Pin|RF_CSN_Pin|RF_SCK_Pin|RF_DATA_Pin
+                          |CHG_MOS_Pin|DIV_MOS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -430,7 +490,8 @@ static void SyncTime_Update(void)
 
   /* 检测周期边界：如果跨越了周期起点，立即点亮 LED 并记录时间戳 */
   if (new_cycles > 0) {
-    HAL_GPIO_WritePin(LED_DRV_GPIO_Port, LED_DRV_Pin, GPIO_PIN_SET);
+    /* v2.0.0: 使用 PWM 驱动 LED 升压电路 */
+    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
     g_led_on_tick = now;  /* 记录点亮时间戳 */
     if (g_led_state == 0) {
       DebugPrint("LED ON @0\r\n");
@@ -449,7 +510,8 @@ static void SyncLamp_Update(void)
     uint32_t on_duration = now - g_led_on_tick;
     if (on_duration >= SYNC_LED_ON_MS) {
       /* 已经亮够 100ms，可以熄灭 */
-      HAL_GPIO_WritePin(LED_DRV_GPIO_Port, LED_DRV_Pin, GPIO_PIN_RESET);
+      /* v2.0.0: 停止 PWM -> LED 灭 */
+      HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
       DebugPrint("LED OFF@");
       DebugPrintDec((uint16_t)on_duration);
       DebugPrint("\r\n");
@@ -458,7 +520,8 @@ static void SyncLamp_Update(void)
   } else {
     /* LED 当前是灭的，根据相位判断是否需要亮 */
     if (g_phase_ms < SYNC_LED_ON_MS) {
-      HAL_GPIO_WritePin(LED_DRV_GPIO_Port, LED_DRV_Pin, GPIO_PIN_SET);
+      /* v2.0.0: 启动 PWM -> LED 亮 */
+      HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
       g_led_on_tick = now;
       DebugPrint("LED ON @");
       DebugPrintDec(g_phase_ms);
