@@ -43,7 +43,7 @@ extern "C" {
 /* USER CODE BEGIN EC */
 
 /* Firmware version (follow PROJECT_RULES) */
-#define FW_VERSION  "v2.0.0-PWM-BOOST"
+#define FW_VERSION  "v2.1.0-DayNight"
 
 /* USER CODE END EC */
 
