@@ -88,6 +88,8 @@ static uint32_t g_last_daynight_tick = 0;  /* 上次日/夜采样时刻 */
 static uint32_t g_daynight_hold_until_tick = 0;  /* 翻转确认：满足条件持续到该 tick 才切换，0=未在确认中 */
 
 static uint32_t g_last_charge_tick = 0;  /* 上次充电控制采样时刻 */
+
+static uint8_t  g_rf_sleeping = 0;        /* 白天低功耗：RF 是否已进入睡眠 */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -190,19 +192,48 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* v2.2.0: 日/夜检测 + 充电控制(过充1.55V/1.35V滞回) + 看门狗喂狗 */
+    /* v2.4.x: 白天低功耗：RF 睡眠 + CPU Sleep(WFI)，保留日夜/充电低频采样 */
+    static uint8_t last_is_night = 1;
+
     DayNight_Update();
     Charge_Update();
+
+    /* 日夜切换时处理 RF 状态 */
+    if (last_is_night != g_is_night) {
+      if (g_is_night) {
+        /* 进入夜间：唤醒并回到 RX */
+        RF_Link_ConfigRx(75);
+        g_rf_mode = 0;
+        g_rf_sleeping = 0;
+      } else {
+        /* 进入白天：让 RF 休眠 */
+        RF_Link_Sleep();
+        g_rf_sleeping = 1;
+      }
+      last_is_night = g_is_night;
+    }
+
     if (g_is_night) {
       Sync_MainLoop();
     } else {
       /* 白天：关灯，不跑同步 */
       HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
       HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+
+      /* 确保 RF 在白天处于睡眠态（避免漏掉首次进入白天的情况） */
+      if (!g_rf_sleeping) {
+        RF_Link_Sleep();
+        g_rf_sleeping = 1;
+      }
     }
 
     /* 喂狗：正常运行时每个主循环都会执行到这里 */
     HAL_IWDG_Refresh(&hiwdg);
+
+    /* 白天：CPU 进入 Sleep，靠 SysTick/中断唤醒（不影响 IWDG） */
+    if (!g_is_night) {
+      HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
+    }
   }
   /* USER CODE END 3 */
 }

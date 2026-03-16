@@ -24,6 +24,11 @@ void RF_Link_ConfigRx(uint8_t channel)
   RF_Set_Chn(channel);
 }
 
+void RF_Link_Sleep(void)
+{
+  RF_Sleep();
+}
+
 int RF_Link_Send(const uint8_t *buf, uint8_t len)
 {
   uint8_t i;

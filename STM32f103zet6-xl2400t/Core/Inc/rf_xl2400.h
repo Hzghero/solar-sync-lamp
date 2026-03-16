@@ -26,6 +26,9 @@ void RF_Link_Init(void);
 void RF_Link_ConfigTx(uint8_t channel);
 void RF_Link_ConfigRx(uint8_t channel);
 
+/* 低功耗：让 RF 进入睡眠/待机（底层写 CFG_TOP=0x00） */
+void RF_Link_Sleep(void);
+
 /**
  * 发送一个固定长度数据包（最多 8 字节）。
  *
