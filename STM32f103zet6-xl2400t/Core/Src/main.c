@@ -42,13 +42,13 @@
 /* 日/夜检测 (规格书 §5)：太阳能板电压 PA0/ADC1_IN0，滞回避免抖动 */
 #define SOLAR_ADC_NIGHT_THRESHOLD   360U   /* raw < 此值判为夜间，开灯 (0.29V @ 3.3Vref) */
 #define SOLAR_ADC_DAY_THRESHOLD    496U   /* raw > 此值判为白天，关灯 (0.4V @ 3.3Vref) */
-#define DAYNIGHT_SAMPLE_INTERVAL_MS 500U  /* 日/夜 ADC 采样间隔 */
+#define DAYNIGHT_SAMPLE_INTERVAL_MS 1000U /* 日/夜 ADC 采样间隔（1s），配合 3s 持续确认 */
 #define DAYNIGHT_HOLD_MS            3000U /* 翻转前需持续满足条件的时间，避免误触发 */
 
 /* 充电控制（过充保护）：电池电压 PA1/ADC1_IN1，1K+104 RC 滤波直采，无分压 (镍氢约 1.2V，最高约 1.6V) */
 #define BATT_ADC_OVERCHARGE_RAW     1924U  /* raw >= 此值关断充电 (1.55V @ 3.3Vref) */
 #define BATT_ADC_REENABLE_RAW      1676U  /* raw <= 此值重新开启充电 (1.35V @ 3.3Vref) */
-#define CHARGE_SAMPLE_INTERVAL_MS  500U   /* 电池 ADC 采样间隔 */
+#define CHARGE_SAMPLE_INTERVAL_MS  3000U  /* 电池 ADC 采样间隔：3s 一次即可 */
 
 /* USER CODE END PD */
 
@@ -711,14 +711,33 @@ static void Charge_Update(void)
   }
   g_last_charge_tick = now;
 
+  /* 仅在“有太阳能输入”时才检查过充，夜间放电时直接返回以减少 ADC 次数 */
+  uint32_t solar_raw = Read_ADC1_Channel(ADC_CHANNEL_0);
+  if (solar_raw == 0xFFFF) {
+    return;
+  }
+  if (solar_raw <= SOLAR_ADC_DAY_THRESHOLD) {
+    /* 太阳能电压不高，认为未在充电状态，跳过过充判断 */
+    return;
+  }
+
   uint32_t raw = Read_ADC1_Channel(ADC_CHANNEL_1);
   if (raw == 0xFFFF) {
     return;
   }
 
+  /* 过充判断增加一次复核：连续两次采样都 >= 阈值才真正认定过充 */
+  static uint8_t overcharge_pending = 0;
+
   if (raw >= BATT_ADC_OVERCHARGE_RAW) {
+    if (!overcharge_pending) {
+      overcharge_pending = 1;
+      return;
+    }
+    overcharge_pending = 0;
     HAL_GPIO_WritePin(CHG_MOS_GPIO_Port, CHG_MOS_Pin, GPIO_PIN_SET);    /* 过充：P 沟道高边，高电平关断充电 */
   } else if (raw <= BATT_ADC_REENABLE_RAW) {
+    overcharge_pending = 0;
     HAL_GPIO_WritePin(CHG_MOS_GPIO_Port, CHG_MOS_Pin, GPIO_PIN_RESET);  /* 电压降到滞回下限，拉低重新导通充电 */
   }
   /* 中间区保持当前 CHG_MOS 状态 */
