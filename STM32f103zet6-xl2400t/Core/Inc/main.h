@@ -43,7 +43,7 @@ extern "C" {
 /* USER CODE BEGIN EC */
 
 /* Firmware version (follow PROJECT_RULES) */
-#define FW_VERSION  "v2.1.0-DayNight"
+#define FW_VERSION  "v2.2.0-Charge"
 
 /* USER CODE END EC */
 

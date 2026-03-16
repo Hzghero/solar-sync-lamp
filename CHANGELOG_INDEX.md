@@ -27,6 +27,7 @@
 | v1.9.0 | 2026-03-14 | 添加 HSE 外部晶振 + IWDG 看门狗（1.6s 超时自动复位） | Core/Src/main.c, Core/Inc/main.h, .ioc |
 | v2.0.0 | 2026-03-14 | LED 升压驱动：PA2 PWM 124kHz 60%、PA3 BOOST_EN 上电 100ms 后使能 | Core/Src/main.c, Core/Inc/main.h, SPECIFICATION.md |
 | v2.1.0 | 2026-03-09 | 日/夜检测：PA0 太阳能板 ADC，<0.29V 开灯、>0.4V 关灯，滞回防抖，白天关灯不跑同步 | Core/Src/main.c, Core/Inc/main.h, CHANGELOG_INDEX.md |
+| v2.2.0 | 2026-03-09 | 充电控制：PA1 电池 ADC 直采(1K+104 RC 无分压)，过充≥1.55V 关断 CHG_MOS、<1.35V 滞回重开 | Core/Src/main.c, Core/Inc/main.h, SPECIFICATION.md, CHANGELOG_INDEX.md |
 
 ---
 
