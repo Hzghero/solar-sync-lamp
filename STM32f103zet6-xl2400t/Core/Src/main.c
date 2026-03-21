@@ -783,34 +783,18 @@ static void Sync_MainLoop(void)
   SyncTime_Update();
   SyncLamp_Update();
 
-  /* RF 睡眠优化：仅在 RX 窗口 (850-900ms) 保持唤醒，其余时间睡眠 */
+  /* 900ms 同步窗口定义 */
   #define RX_WINDOW_START_MS 850U
   #define RX_WINDOW_END_MS   900U
 
-  if (g_phase_ms >= RX_WINDOW_START_MS && g_phase_ms < RX_WINDOW_END_MS) {
-    // 在 RX 窗口内，确保 RF 处于 RX 模式
-    if (g_rf_sleeping_night) {
-      RF_Link_ConfigRx(75);
-      g_rf_mode = 0;
-      g_rf_sleeping_night = 0;
-      DebugPrint("RF Wake RX\r\n");
-    }
-  } else {
-    // 不在 RX 窗口，RF 进入睡眠
-    if (!g_rf_sleeping_night) {
-      RF_Link_Sleep();
-      g_rf_sleeping_night = 1;
-      DebugPrint("RF Sleep\r\n");
-    }
-  }
-
-  /* 所有节点使用相同的固定 TX 时间，同步后 TX 时间也同步 */
+  /* 所有节点使用相同的固定 TX 时间 */
   uint16_t tx_time = SYNC_TX_TIME_MS;
+  bool in_tx_window = (g_cycle != g_last_tx_cycle && g_phase_ms >= tx_time && g_phase_ms < (tx_time + 50U));
+  bool in_rx_window = (g_phase_ms >= RX_WINDOW_START_MS && g_phase_ms < RX_WINDOW_END_MS);
 
-  /* 判断是否到了本周期的发送时间（且本周期尚未发送） */
-  if (g_cycle != g_last_tx_cycle && g_phase_ms >= tx_time && g_phase_ms < (tx_time + 50U)) {
-    /* 发送前确保 RF 唤醒 */
-    if (g_rf_sleeping_night) {
+  /* 优先 TX：如果到了发送窗口立即发送，不受 RX 逻辑覆盖 */
+  if (in_tx_window) {
+    if (g_rf_sleeping_night || g_rf_mode != 1) {
       RF_Link_ConfigTx(76);
       g_rf_mode = 1;
       g_rf_sleeping_night = 0;
@@ -826,25 +810,32 @@ static void Sync_MainLoop(void)
     g_last_tx_cycle = g_cycle;
     HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 
-    /* 发送完切回 RX 模式 */
-    RF_Link_ConfigRx(75);
+    /* 发送完成后回到 RX 逻辑，不立即睡眠，下一条逻辑决定 */
     g_rf_mode = 0;
-    /* 如果不在 RX 窗口，立即睡眠 */
-    if (g_phase_ms < RX_WINDOW_START_MS || g_phase_ms >= RX_WINDOW_END_MS) {
+  }
+
+  /* RX 窗口保持唤醒 */
+  if (in_rx_window) {
+    if (g_rf_sleeping_night || g_rf_mode != 0) {
+      RF_Link_ConfigRx(75);
+      g_rf_mode = 0;
+      g_rf_sleeping_night = 0;
+      DebugPrint("RF Wake RX\r\n");
+    }
+  } else {
+    /* 非 RX 窗口则休眠，TX 窗口已经发送后也会进入 */
+    if (!in_tx_window && !g_rf_sleeping_night) {
       RF_Link_Sleep();
       g_rf_sleeping_night = 1;
-      DebugPrint("RF Sleep after TX\r\n");
-    } else {
-      g_rf_sleeping_night = 0;
+      DebugPrint("RF Sleep\r\n");
     }
   }
 
   /* RX 模式下轮询接收 */
-  if (g_rf_mode == 0) {
+  if (g_rf_mode == 0 && !in_tx_window) {
     uint8_t rx_len = 0;
     if (RF_Link_PollReceive(RF_RX_Buf, &rx_len) == 1) {
       uint16_t rx_phase_ms = ParseSyncPacket(RF_RX_Buf);
-
       if (rx_phase_ms < SYNC_CYCLE_MS) {
         DebugPrint("RX: ph=");
         DebugPrintDec(rx_phase_ms);
