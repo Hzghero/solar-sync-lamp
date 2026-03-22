@@ -789,8 +789,8 @@ static void Sync_MainLoop(void)
 
   /* 所有节点使用相同的固定 TX 时间 */
   uint16_t tx_time = SYNC_TX_TIME_MS;
-  bool in_tx_window = (g_cycle != g_last_tx_cycle && g_phase_ms >= tx_time && g_phase_ms < (tx_time + 50U));
-  bool in_rx_window = (g_phase_ms >= RX_WINDOW_START_MS && g_phase_ms < RX_WINDOW_END_MS);
+  uint8_t in_tx_window = (g_cycle != g_last_tx_cycle && g_phase_ms >= tx_time && g_phase_ms < (tx_time + 50U));
+  uint8_t in_rx_window = (g_phase_ms >= RX_WINDOW_START_MS && g_phase_ms < RX_WINDOW_END_MS);
 
   /* 优先 TX：如果到了发送窗口立即发送，不受 RX 逻辑覆盖 */
   if (in_tx_window) {
@@ -810,8 +810,8 @@ static void Sync_MainLoop(void)
     g_last_tx_cycle = g_cycle;
     HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 
-    /* 发送完成后回到 RX 逻辑，不立即睡眠，下一条逻辑决定 */
-    g_rf_mode = 0;
+    /* 发送完成后保持 TX 硬件状态，待 RX 窗口转换 */
+    g_rf_mode = 1;
   }
 
   /* RX 窗口保持唤醒 */
