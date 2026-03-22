@@ -43,7 +43,7 @@ extern "C" {
 /* USER CODE BEGIN EC */
 
 /* Firmware version (follow PROJECT_RULES) */
-#define FW_VERSION  "v2.4.1-RF-Sleep"
+#define FW_VERSION  "v2.4.3-RX-Immediate"
 
 /* USER CODE END EC */
 

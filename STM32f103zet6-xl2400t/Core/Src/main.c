@@ -783,22 +783,15 @@ static void Sync_MainLoop(void)
   SyncTime_Update();
   SyncLamp_Update();
 
-  /* 900ms 同步窗口定义 */
-  #define RX_WINDOW_START_MS 850U
-  #define RX_WINDOW_END_MS   900U
-
-  /* 所有节点使用相同的固定 TX 时间 */
+  /* 900ms 同步窗口定义（保持 TX=450，不抖动；到 TX 后立刻 RX，仿照 v2.3.0 行为） */
   uint16_t tx_time = SYNC_TX_TIME_MS;
   uint8_t in_tx_window = (g_cycle != g_last_tx_cycle && g_phase_ms >= tx_time && g_phase_ms < (tx_time + 50U));
-  uint8_t in_rx_window = (g_phase_ms >= RX_WINDOW_START_MS && g_phase_ms < RX_WINDOW_END_MS);
 
-  /* 优先 TX：如果到了发送窗口立即发送，不受 RX 逻辑覆盖 */
+  /* 优先 TX：如果到了发送窗口立即发送 */
   if (in_tx_window) {
-    if (g_rf_sleeping_night || g_rf_mode != 1) {
+    if (g_rf_mode != 1) {
       RF_Link_ConfigTx(76);
       g_rf_mode = 1;
-      g_rf_sleeping_night = 0;
-      DebugPrint("RF Wake TX\r\n");
     }
 
     BuildSyncPacket(RF_TX_Buf);
@@ -810,25 +803,17 @@ static void Sync_MainLoop(void)
     g_last_tx_cycle = g_cycle;
     HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 
-    /* 发送完成后保持 TX 硬件状态，待 RX 窗口转换 */
-    g_rf_mode = 1;
+    /* 发送完成后立即切回 RX */
+    RF_Link_ConfigRx(75);
+    g_rf_mode = 0;
+    g_rf_sleeping_night = 0;
   }
 
-  /* RX 窗口保持唤醒 */
-  if (in_rx_window) {
-    if (g_rf_sleeping_night || g_rf_mode != 0) {
-      RF_Link_ConfigRx(75);
-      g_rf_mode = 0;
-      g_rf_sleeping_night = 0;
-      DebugPrint("RF Wake RX\r\n");
-    }
-  } else {
-    /* 非 RX 窗口则休眠，TX 窗口已经发送后也会进入 */
-    if (!in_tx_window && !g_rf_sleeping_night) {
-      RF_Link_Sleep();
-      g_rf_sleeping_night = 1;
-      DebugPrint("RF Sleep\r\n");
-    }
+  /* 永远保持 RX（夜间降功耗策略暂时关闭，用于同步稳定性验证） */
+  if (g_rf_mode != 0) {
+    RF_Link_ConfigRx(75);
+    g_rf_mode = 0;
+    g_rf_sleeping_night = 0;
   }
 
   /* RX 模式下轮询接收 */

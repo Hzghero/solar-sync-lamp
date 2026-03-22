@@ -31,6 +31,9 @@
 | v2.3.0 | 2026-03-09 | 省电优化：日夜采样改为 1s；充电过充采样改为 3s 且仅在太阳能电压高(认为在充电)时判断；过充阈值增加二次确认（连续两次满足才关断） | Core/Src/main.c, Core/Inc/main.h, SPECIFICATION.md, CHANGELOG_INDEX.md |
 | v2.3.1 | 2026-03-09 | 规划：流水灯/序列灯（长距离多节点）建议采用“波前/令牌逐跳转发”，不依赖 RSSI 排序；关键策略：令牌包包含 seq/ttl/dir，收到后按 \(seq \times \Delta t\) 延时点亮并转发一次，冲突用随机退避与去重窗口抑制 | CHANGELOG_INDEX.md |
 | v2.4.0 | 2026-03-21 | 低功耗优化：夜间仅在RX窗口(850-900ms)保持RF唤醒，其余时间RF睡眠，降低夜间功耗约20% | Core/Src/main.c, Core/Inc/main.h, docs/LOW_POWER_IMPLEMENTATION.md |
+| v2.4.1 | 2026-03-22 | 强化 RX 窗口/RF状态：实现 RX/非RX锁定后睡眠、TX优先模式 | Core/Src/main.c, Core/Inc/main.h |
+| v2.4.2 | 2026-03-22 | RX 窗口调整为 500-650，TX 固定450，不引入抖动；保留小功耗段睡眠 | Core/Src/main.c, Core/Inc/main.h |
+| v2.4.3 | 2026-03-22 | 兼容 v2.3.0 RX 行为：TX 后立即切回 RX，夜间常开 RX，便于排查同步未收包问题 | Core/Src/main.c, Core/Inc/main.h |
 | v2.4.1 | 2026-03-22 | 强化RX窗口与TX互斥：TX后的硬件保持TX状态，RX窗口关闭后唤醒RX，避免 TX/RX 状态混淆 | Core/Src/main.c, Core/Inc/main.h |
 
 ---
