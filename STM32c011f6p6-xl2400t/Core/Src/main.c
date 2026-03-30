@@ -1256,9 +1256,13 @@ static void Undervolt_EnterLowPowerOutputs(void)
   HAL_GPIO_WritePin(BOOST_EN_GPIO_Port, BOOST_EN_Pin, GPIO_PIN_RESET);
   HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
-  /* STOP 欠压停载：让 RF 进入睡眠 */
-  if(!g_rf_sleeping) {
+  /* STOP 欠压停载：让 RF 进入睡眠（不要依赖 g_rf_sleeping 的软件状态，避免 IO 状态不一致） */
+  if(g_rf_initialized) {
     RF_Link_Sleep();
+    /* 软件 SPI 三线钉死到安全电平，避免进入低功耗后电平漂移导致 XL2400T 异常唤醒/通信态错乱 */
+    HAL_GPIO_WritePin(GPIOA, RF_CSN_Pin, GPIO_PIN_SET);    /* CSN 高：片选无效 */
+    HAL_GPIO_WritePin(GPIOA, RF_SCK_Pin, GPIO_PIN_RESET);  /* SCK 低 */
+    HAL_GPIO_WritePin(GPIOA, RF_DATA_Pin, GPIO_PIN_RESET); /* DATA 低 */
     g_rf_sleeping = 1;
   }
 }
