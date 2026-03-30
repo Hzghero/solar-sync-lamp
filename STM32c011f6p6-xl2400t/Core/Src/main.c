@@ -322,15 +322,20 @@ int main(void)
         if(Undervolt_RTC_SetNextAlarm(&hrtc) != HAL_OK) {
           DebugPrint("[UV] RTC arm failed\r\n");
         }
+        DebugPrint("[UV] flashPD ON\r\n");
         /* STOP 前关串口并拉 PA9/PA10 为模拟输入，避免 UART 复用/浮空脚漏电（白天分支 Sleep 亦 DeInit UART） */
         HAL_UART_DeInit(&huart1);
         Undervolt_SetUartPinsAnalog();
         Undervolt_PrepareExtiPa0();
+        /* 省电：STOP 期间允许 Flash power-down */
+        HAL_PWREx_EnableFlashPowerDown(PWR_FLASHPD_STOP);
         HAL_PWR_EnterSTOPMode(PWR_MAINREGULATOR_ON, PWR_STOPENTRY_WFI);
         SystemClock_Config();
         PeriphCommonClock_Config();
         Undervolt_RestoreAdcFromExti();
+        HAL_PWREx_DisableFlashPowerDown(PWR_FLASHPD_STOP);
         MX_USART1_UART_Init();
+        DebugPrint("[UV] flashPD OFF\r\n");
         __HAL_RTC_CLEAR_FLAG(&hrtc, RTC_CLEAR_ALRAF);
         DebugPrint("[UV] wake from STOP\r\n");
         uint32_t br = Read_ADC1_Channel(ADC_CHANNEL_1);
