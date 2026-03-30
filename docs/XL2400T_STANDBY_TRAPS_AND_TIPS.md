@@ -88,3 +88,16 @@
 
 **结论**：浅睡眠阶段仍存在残余偏置/IO 耦合，使 RF 电流仍在百 uA 量级；而“真正完成 Standby 进入 + Standby 期间 RF 三线电平被 PWR 强制保持”之后，RF 才进入最终极低电流态。
 
+---
+
+## 7. 今日补充（STOP 回归验证）
+
+你最新日志显示：
+- 上电后正常初始化 RF、同步逻辑正常；
+- 欠压后进入 `STOP` 分支：`[UV] enter STOP ...`；
+- 每个周期都有 `RTC arm currSec=... nextSec=...`；
+- 每次都能 `flashPD ON -> flashPD OFF -> wake from STOP` 循环。
+
+这说明当前 `STOP + RTC + Flash power-down` 主链路是通的。  
+即使“静态电流仍高于 Standby 方案”，从工程可用性与可唤醒稳定性角度看，已经达到可持续迭代的稳定基线。
+

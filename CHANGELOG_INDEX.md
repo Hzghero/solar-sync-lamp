@@ -63,6 +63,7 @@
 | v2.13.1 | 2026-03-30 | 欠压更深低功耗：由 STOP 切换为 Standby（RTC Alarm A 周期唤醒，Standby exit=复位启动），启动阶段快速判断欠压并再次进入 Standby | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h |
 | v2.13.2 | 2026-03-30 | 低功耗关键踩坑修复：进入 Standby 后 XL2400T 被 GPIO 漂移/毛刺唤醒导致 ~600uA；改为在 Standby 期间用 PWR 的 Pull-up/Pull-down + APC 保持 RF_CSN=高、RF_SCK/RF_DATA=低，并增加 WFI 观测窗口验证 RF 睡眠电流（可降至 µA 级） | STM32c011f6p6-xl2400t/Core/Src/main.c, docs/LOW_POWER_IMPLEMENTATION.md, docs/XL2400T_STANDBY_TRAPS_AND_TIPS.md |
 | v2.13.3 | 2026-03-30 | Proof 对照测量补充：`WFI(SLEEP)`/忙等浅睡眠窗口电流约 190uA/160uA；进入 `enter STANDBY now` 后电流瞬降至约 1.6uA（验证 Standby 引脚保持机制已真正生效） | docs/XL2400T_STANDBY_TRAPS_AND_TIPS.md, docs/LOW_POWER_IMPLEMENTATION.md |
+| v2.13.4 | 2026-03-30 | 经验沉淀：新增 `STM32C011` 低功耗开发清单（RCC/低功耗模式/中断唤醒差异/RF易踩坑/验收步骤），并补充当日 STOP 回归验证日志结论 | docs/STM32C011_LOW_POWER_CHECKLIST.md, docs/XL2400T_STANDBY_TRAPS_AND_TIPS.md, CHANGELOG_INDEX.md |
 
 ---
 
