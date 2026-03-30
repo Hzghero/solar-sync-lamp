@@ -41,7 +41,7 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-#define FW_VERSION "v2.12.1-STOP-FlashPD"
+#define FW_VERSION "v2.13.1-STANDBY-RTC"
 
 /* USER CODE END EC */
 
