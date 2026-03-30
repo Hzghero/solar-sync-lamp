@@ -60,6 +60,9 @@
 | v2.5.1 | 2026-03-23 | IWDG 修复：移至主循环入口前启动；Prescaler 256 + Reload 4095 约 32s 超时；Window=0 禁用窗口 | main.c, .ioc |
 | v2.5.2 | 2026-03-30 | 文档规划更新：补充项目未完成事项；新增 PA1 过充/过放联合保护评估与待办，明确 0.9V 作为硬件兜底、软件采用预过放阈值策略 | SPECIFICATION_v2.0.0.md, CHANGELOG_INDEX.md |
 | v2.5.3 | 2026-03-30 | 索引补充：新增“未完成事项总览”与“PA1 预过放软件策略”条目，明确后续待办与文档计划 | SPECIFICATION_v2.0.0.md, CHANGELOG_INDEX.md |
+| v2.13.1 | 2026-03-30 | 欠压更深低功耗：由 STOP 切换为 Standby（RTC Alarm A 周期唤醒，Standby exit=复位启动），启动阶段快速判断欠压并再次进入 Standby | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h |
+| v2.13.2 | 2026-03-30 | 低功耗关键踩坑修复：进入 Standby 后 XL2400T 被 GPIO 漂移/毛刺唤醒导致 ~600uA；改为在 Standby 期间用 PWR 的 Pull-up/Pull-down + APC 保持 RF_CSN=高、RF_SCK/RF_DATA=低，并增加 WFI 观测窗口验证 RF 睡眠电流（可降至 µA 级） | STM32c011f6p6-xl2400t/Core/Src/main.c, docs/LOW_POWER_IMPLEMENTATION.md, docs/XL2400T_STANDBY_TRAPS_AND_TIPS.md |
+| v2.13.3 | 2026-03-30 | Proof 对照测量补充：`WFI(SLEEP)`/忙等浅睡眠窗口电流约 190uA/160uA；进入 `enter STANDBY now` 后电流瞬降至约 1.6uA（验证 Standby 引脚保持机制已真正生效） | docs/XL2400T_STANDBY_TRAPS_AND_TIPS.md, docs/LOW_POWER_IMPLEMENTATION.md |
 
 ---
 

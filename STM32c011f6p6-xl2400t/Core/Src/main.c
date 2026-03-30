@@ -64,6 +64,19 @@
 
 #define UV_STOP_RTC_ALARM_STEP_SEC   5U    /* 欠压 STOP 期间 RTC Alarm A 周期间隔（秒） */
 
+/* Debug: 在进入 Standby 前留出时间观察 RF 睡眠后电流回落情况 */
+#define UV_RF_SLEEP_MEASURE_BEFORE_STANDBY_MS 3000U
+
+/* 欠压低功耗“证明实验”开关：
+ * 0=关闭（走正常逻辑）
+ * 1=用 HAL_Delay 忙等 UV_RF_SLEEP_MEASURE_BEFORE_STANDBY_MS（CPU 运行态）
+ * 2=用 WFI(SLEEP) 等待 UV_RF_SLEEP_MEASURE_BEFORE_STANDBY_MS（浅睡眠态）
+ *
+ * 说明：用于解释“为什么等待窗口电流较高，但进入 Standby 瞬间掉到 µA”。
+ * 测完把它改回 0 即可复原。
+ */
+#define UV_RF_PROOF_MODE 0U
+
 #define DEBUG_ADC_VERBOSE  1   /* 调试：1=打印 ADC 采样值，完成后可改为 0 精简 */
 #define DEBUG_SYNC_VERBOSE 1   /* 调试：1=打印详细同步信息，0=只打印关键事件 */
 #define DEBUG_LED_VERBOSE  1   /* 调试：1=打印LED状态，0=不打印 */
@@ -144,6 +157,8 @@ static void Undervolt_RestoreAdcFromExti(void);
 static void Undervolt_EnterLowPowerOutputs(void);
 static void Undervolt_SetUartPinsAnalog(void);
 static void Undervolt_PrepareStandbyIO(void);
+static void Undervolt_StandbyHoldRfPins(void);
+static void Undervolt_Wait_WFI_Ms(uint32_t ms);
 static HAL_StatusTypeDef Undervolt_RTC_SetNextAlarm(RTC_HandleTypeDef *hrtc);
 static uint32_t Read_ADC1_Channel(uint32_t channel);  /* 指定通道读 ADC1 一次，PA0=ch0 太阳能，PA1=ch1 电池 */
 static void Test_ADC_Channels(void);                   /* ADC通道切换测试函数 */
@@ -226,6 +241,11 @@ int main(void)
       DebugPrint(woke_from_standby ? "[UV] wake->still low, " : "[UV] boot low, ");
       DebugPrint("enter STANDBY\r\n");
 
+      DebugPrint("[UV] RF init+sleep for standby\r\n");
+      RF_Link_Init();
+      g_rf_initialized = 1;
+      g_rf_sleeping = 0;
+
       g_batt_undervolt = 1;
       if(Undervolt_RTC_SetNextAlarm(&hrtc) != HAL_OK) {
         DebugPrint("[UV] RTC arm failed\r\n");
@@ -236,6 +256,7 @@ int main(void)
       Undervolt_SetUartPinsAnalog();
       Undervolt_EnterLowPowerOutputs();
       Undervolt_PrepareStandbyIO();
+      Undervolt_StandbyHoldRfPins();
       HAL_PWREx_EnableFlashPowerDown(PWR_FLASHPD_SLEEP);
       HAL_PWR_EnterSTANDBYMode();
       while(1) {;}
@@ -368,6 +389,18 @@ int main(void)
       DebugPrint("[UV] latched -> STANDBY\r\n");
       Undervolt_EnterLowPowerOutputs();
 
+      DebugPrint("[UV] wait RF sleep settle ");
+      DebugPrintDec((uint16_t)UV_RF_SLEEP_MEASURE_BEFORE_STANDBY_MS);
+      if(UV_RF_PROOF_MODE == 1U) {
+        DebugPrint("ms (HAL_Delay busy)\r\n");
+        HAL_Delay(UV_RF_SLEEP_MEASURE_BEFORE_STANDBY_MS);
+      } else if(UV_RF_PROOF_MODE == 2U) {
+        DebugPrint("ms (WFI sleep)\r\n");
+        Undervolt_Wait_WFI_Ms(UV_RF_SLEEP_MEASURE_BEFORE_STANDBY_MS);
+      } else {
+        DebugPrint("ms (skip)\r\n");
+      }
+
       if(Undervolt_RTC_SetNextAlarm(&hrtc) != HAL_OK) {
         DebugPrint("[UV] RTC arm failed\r\n");
       }
@@ -377,6 +410,7 @@ int main(void)
       HAL_UART_DeInit(&huart1);
       Undervolt_SetUartPinsAnalog();
       Undervolt_PrepareStandbyIO();
+      Undervolt_StandbyHoldRfPins();
       HAL_PWREx_EnableFlashPowerDown(PWR_FLASHPD_SLEEP);
 
       DebugPrint("[UV] enter STANDBY now\r\n");
@@ -1261,9 +1295,40 @@ static void Undervolt_EnterLowPowerOutputs(void)
   HAL_GPIO_WritePin(BOOST_EN_GPIO_Port, BOOST_EN_Pin, GPIO_PIN_RESET);
   HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
-  if(g_rf_initialized && !g_rf_sleeping) {
-      RF_Link_Sleep();
-      g_rf_sleeping = 1;
+  if(g_rf_initialized) {
+    /* 无条件下发“睡眠”指令，避免 g_rf_sleeping 状态不准导致 XL2400T 未进入低功耗 */
+    RF_Link_Sleep();
+#if DEBUG_ADC_VERBOSE
+    {
+      uint8_t cfg = RF_SPI_Read_Reg(R_REGISTER + CFG_TOP);
+      DebugPrint("[UV] RF cfg_top(after sleep)=");
+      DebugPrintDec(cfg);
+      DebugPrint("\r\n");
+    }
+#endif
+    /* 让软件SPI相关脚保持静态电平，避免进入 Standby 过程中出现毛刺唤醒 */
+    HAL_GPIO_WritePin(GPIOA, RF_CSN_Pin, GPIO_PIN_SET);   /* CSN 置高（片选无效） */
+    HAL_GPIO_WritePin(GPIOA, RF_SCK_Pin, GPIO_PIN_RESET); /* SCK 低 */
+    HAL_GPIO_WritePin(GPIOA, RF_DATA_Pin, GPIO_PIN_RESET);/* DATA 低 */
+    g_rf_sleeping = 1;
+  }
+}
+
+static void Undervolt_StandbyHoldRfPins(void)
+{
+  /* Standby 下 GPIO 可能不再保持推挽输出，使用 PWR 的 PU/PD 在 Standby 内维持线状态 */
+  (void)HAL_PWREx_DisableGPIOPullDown(PWR_GPIO_A, RF_CSN_Pin);
+  (void)HAL_PWREx_DisableGPIOPullUp(PWR_GPIO_A, RF_SCK_Pin | RF_DATA_Pin);
+  (void)HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_A, RF_CSN_Pin);                 /* CSN 高 */
+  (void)HAL_PWREx_EnableGPIOPullDown(PWR_GPIO_A, RF_SCK_Pin | RF_DATA_Pin); /* SCK/DATA 低 */
+  HAL_PWREx_EnablePullUpPullDownConfig();
+}
+
+static void Undervolt_Wait_WFI_Ms(uint32_t ms)
+{
+  uint32_t start = HAL_GetTick();
+  while((HAL_GetTick() - start) < ms) {
+    HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
   }
 }
 

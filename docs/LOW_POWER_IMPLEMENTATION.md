@@ -52,6 +52,30 @@
 
 ## 4. 后续优化规划
 
+### 4.0 欠压 Standby + RTC 周期唤醒（v2.13.x）
+
+**目标**：电池欠压（或你人为将 PA1 拉到极低）时，停止放电负载并进入更深的低功耗，靠 RTC Alarm A 周期唤醒（Standby exit=复位启动）重测电池是否恢复。
+
+**关键结论（实测驱动排障后的经验）**：
+- `RF_Link_Sleep()` 可以让 XL2400T 进入极低电流，但**进入 Standby 后若 GPIO 变为高阻/漂移，RF 可能会被异常边沿唤醒**，出现“Standby 反而 600uA”这种假象。
+- 解决办法不是反复改 RF 寄存器，而是让 Standby 期间 RF 三线保持稳定电平：  
+  - CSN 上拉为高（片选无效）  
+  - SCK/DATA 下拉为低（避免毛刺/边沿）  
+  - 通过 PWR 的 Standby Pull-up/Pull-down + APC 机制生效
+
+**实现要点**（代码侧）：
+- 进入 Standby 前：无条件下发 `RF_Link_Sleep()`，并把 RF 的 CSN/SCK/DATA 置为静态电平
+- 进入 Standby 时：启用 `HAL_PWREx_EnableGPIOPullUp/Down()` 并 `HAL_PWREx_EnablePullUpPullDownConfig()`，确保 Standby 期间引脚仍保持
+- 通过“WFI 等待窗口（例如 3~9 秒）”验证 RF 睡眠电流是否真的降下来，再进入 Standby 做最终确认
+
+**验证结果（你这次的 Proof 对照测量）**：
+- `UV_RF_PROOF_MODE=1`（`HAL_Delay` 忙等）：9 秒窗口约 `190 uA`；Standby 后约 `1.6 uA`
+- `UV_RF_PROOF_MODE=2`（`WFI(SLEEP)`）：9 秒窗口约 `160 uA`；Standby 后约 `1.6 uA`
+- 说明：浅睡眠阶段仍可能存在残余偏置/IO 耦合，RF 电流不会到最终 µA 级；只有在真正进入 Standby 并由 PWR 引脚保持机制“钉住”RF 三线电平后，RF 才进入最终极低电流态。
+
+**文档沉淀**：
+- 详细“易踩坑/心得清单”见：`docs/XL2400T_STANDBY_TRAPS_AND_TIPS.md`
+
 ### 4.1 MCU Stop 模式 (v2.5.0 规划)
 
 **目标**：在 LED OFF 期间 (800ms/周期) 让 MCU 进入 Stop 模式。
