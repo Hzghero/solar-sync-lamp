@@ -41,7 +41,7 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-#define FW_VERSION "v2.5.2-NoIWDG"
+#define FW_VERSION "v2.12.0-STOP-IO-leak"
 
 /* USER CODE END EC */
 

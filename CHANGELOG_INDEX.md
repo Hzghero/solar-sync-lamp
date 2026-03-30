@@ -1,5 +1,19 @@
 # 修改索引总表
 
+## STM32C011 移植上下文（2026-03-23 建立）
+
+**项目结构**：
+- 参考（旧 MCU）：`reference Solar-powered synchronized flashing lamps/STM32f103zet6-xl2400t`（STM32F103ZET6，功能完整）
+- 目标（新 MCU）：`STM32c011f6p6-xl2400t`（STM32C011F6P6 TSSOP20，通讯已通，其余功能待移植）
+
+**移植意图**：将旧 MCU 的完整功能按积木化方式逐块移植到新 MCU，功能保持一致。通讯为最核心模块，已移植成功。
+
+**详细文档**：
+- `docs/MIGRATION_CONTEXT.md`：移植上下文、功能状态、积木顺序
+- `docs/IO_MAPPING.md`：新旧 MCU IO 映射（PB5→PB6、PA11→PA6 等，C011 引脚少需重映射）
+
+---
+
 | 版本号 | 日期 | 修改要点 | 关联文件 |
 |--------|------|----------|----------|
 | v1.0.0 | 2025-03-09 | 初始化：规则文件、索引表、规格书 | PROJECT_RULES.md, CHANGELOG_INDEX.md, SPECIFICATION.md |
@@ -33,8 +47,19 @@
 | v2.4.0 | 2026-03-21 | 低功耗优化：夜间仅在RX窗口(850-900ms)保持RF唤醒，其余时间RF睡眠，降低夜间功耗约20% | Core/Src/main.c, Core/Inc/main.h, docs/LOW_POWER_IMPLEMENTATION.md |
 | v2.4.1 | 2026-03-22 | 强化 RX 窗口/RF状态：实现 RX/非RX锁定后睡眠、TX优先模式 | Core/Src/main.c, Core/Inc/main.h |
 | v2.4.2 | 2026-03-22 | RX 窗口调整为 500-650，TX 固定450，不引入抖动；保留小功耗段睡眠 | Core/Src/main.c, Core/Inc/main.h |
+| v2.4.5 | 2026-03-22 | 无线频道修复：TX@76/RX@75 相邻频道策略避免自干扰；TX后立即切回RX全程侦听，消除睡眠窗口漏包问题；采用RF_Link API 规范接口 | Core/Src/main.c, Core/Inc/main.h |
+| v2.4.4 | 2026-03-22 | 兼容 v2.3.0 RX 行为；TX/RX 均触发 LED(PB6)/LED_DRV(PA2) 点亮，增加状态可视化 | Core/Src/main.c, Core/Inc/main.h |
 | v2.4.3 | 2026-03-22 | 兼容 v2.3.0 RX 行为：TX 后立即切回 RX，夜间常开 RX，便于排查同步未收包问题 | Core/Src/main.c, Core/Inc/main.h |
 | v2.4.1 | 2026-03-22 | 强化RX窗口与TX互斥：TX后的硬件保持TX状态，RX窗口关闭后唤醒RX，避免 TX/RX 状态混淆 | Core/Src/main.c, Core/Inc/main.h |
+| v1.1.0-rules | 2026-03-23 | 开发规则：强制要求代码使用中文注释；建立 C011 移植上下文、IO 映射文档 | PROJECT_RULES.md, CHANGELOG_INDEX.md, docs/MIGRATION_CONTEXT.md, docs/IO_MAPPING.md |
+| v2.4.6 | 2026-03-23 | C011 积木1：ADC 双通道 Read_ADC1_Channel(PA0/PA1)，DayNight/Charge 改用该接口；增加 DEBUG_ADC_VERBOSE 调试打印 | STM32c011f6p6-xl2400t/Core/Src/main.c, main.h |
+| v2.4.7 | 2026-03-23 | 积木2：日/夜 3s 持续确认 | main.c |
+| v2.4.8 | 2026-03-23 | 积木3：充电控制增强（太阳能预判、过充二次确认） | main.c |
+| v2.4.9 | 2026-03-23 | 积木4/5：LED 驱动改为 TIM1 PWM，闪灯逻辑对齐 | main.c |
+| v2.5.0 | 2026-03-23 | 积木6/7/8：主循环日夜分支、白天 RF 睡眠+CPU WFI、看门狗恢复、BuildSyncPacket 传输延迟补偿 | main.c, main.h |
+| v2.5.1 | 2026-03-23 | IWDG 修复：移至主循环入口前启动；Prescaler 256 + Reload 4095 约 32s 超时；Window=0 禁用窗口 | main.c, .ioc |
+| v2.5.2 | 2026-03-30 | 文档规划更新：补充项目未完成事项；新增 PA1 过充/过放联合保护评估与待办，明确 0.9V 作为硬件兜底、软件采用预过放阈值策略 | SPECIFICATION_v2.0.0.md, CHANGELOG_INDEX.md |
+| v2.5.3 | 2026-03-30 | 索引补充：新增“未完成事项总览”与“PA1 预过放软件策略”条目，明确后续待办与文档计划 | SPECIFICATION_v2.0.0.md, CHANGELOG_INDEX.md |
 
 ---
 
@@ -43,6 +68,8 @@
 | 版本 | 日期 | 修改要点 |
 |------|------|----------|
 | v1.2.0 | 2026-03-14 | LED 驱动改为电感升压方式；PA2 改为 TIM PWM 输出 124kHz 60%；新增 PA3 (BOOST_EN) 升压使能；PA1 预留电池检测 |
+| v2.0.0 | 2026-03-24 | MCU 移植到 STM32C011F6P6；IO 重映射更新；新增详细 IO 状态表；充电控制逻辑详细说明 |
+| v2.0.1 | 2026-03-30 | 规格书补充未完成事项与待办计划；明确 PA1 过充可行、0.9V 过放不建议由 MCU ADC 直接执行，改为“软件预保护+硬件兜底”策略 |
 
 ---
 
