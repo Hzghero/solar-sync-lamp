@@ -230,8 +230,6 @@ int main(void)
       if(Undervolt_RTC_SetNextAlarm(&hrtc) != HAL_OK) {
         DebugPrint("[UV] RTC arm failed\r\n");
       }
-      /* 避免遗留 ALRAF 造成“立即再次唤醒/复位” */
-      __HAL_RTC_CLEAR_FLAG(&hrtc, RTC_CLEAR_ALRAF);
 
       DebugPrint("[UV] enter STANDBY now\r\n");
       HAL_UART_DeInit(&huart1);
@@ -373,8 +371,6 @@ int main(void)
       if(Undervolt_RTC_SetNextAlarm(&hrtc) != HAL_OK) {
         DebugPrint("[UV] RTC arm failed\r\n");
       }
-      /* 避免遗留 ALRAF 造成“立即再次唤醒/复位” */
-      __HAL_RTC_CLEAR_FLAG(&hrtc, RTC_CLEAR_ALRAF);
 
       /* 进入 Standby 前关串口并拉关键 IO 为低漏电状态 */
       DebugPrint("[UV] prepare IO + enter STANDBY\r\n");
