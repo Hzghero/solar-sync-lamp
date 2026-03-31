@@ -77,6 +77,9 @@
  */
 #define UV_RF_PROOF_MODE 0U
 
+#define DEBUG_UART_ENABLE 1   /* 1=初始化USART1；0=不初始化USART1(并将PA9/PA10设为模拟输入降漏电) */
+#define DEBUG_UART_PRINT  1   /* 1=允许串口打印；0=所有 DebugPrint*() 直接return，不发送任何字节 */
+
 #define DEBUG_ADC_VERBOSE  1   /* 调试：1=打印 ADC 采样值，完成后可改为 0 精简 */
 #define DEBUG_SYNC_VERBOSE 1   /* 调试：1=打印详细同步信息，0=只打印关键事件 */
 #define DEBUG_LED_VERBOSE  1   /* 调试：1=打印LED状态，0=不打印 */
@@ -156,6 +159,7 @@ static void Undervolt_PrepareExtiPa0(void);
 static void Undervolt_RestoreAdcFromExti(void);
 static void Undervolt_EnterLowPowerOutputs(void);
 static void Undervolt_SetUartPinsAnalog(void);
+static void Undervolt_EnterStandby(void);
 static void Undervolt_PrepareStandbyIO(void);
 static void Undervolt_StandbyHoldRfPins(void);
 static void Undervolt_Wait_WFI_Ms(uint32_t ms);
@@ -203,10 +207,41 @@ int main(void)
   MX_GPIO_Init();
   MX_ADC1_Init();
   MX_TIM1_Init();
+#if DEBUG_UART_ENABLE
   MX_USART1_UART_Init();
+#else
+  /* 不启用 USART：把 PA9/PA10 设为模拟输入，避免浮空/复用导致漏电 */
+  Undervolt_SetUartPinsAnalog();
+#endif
   MX_RTC_Init();
   /* USER CODE BEGIN 2 */
   DebugPrint("[FW] " FW_VERSION "\r\n");
+
+  /* 欠压 Standby 唤醒后（或直接上电欠压）快速重入判定：
+   *  - 在不启用升压/无线的前提下，尽快决定是否进入 Standby
+   *  - 避免“刚唤醒就先把 BOOST/RF 打开导致功耗抖动/不再进入低功耗”
+   */
+  {
+    uint32_t sb_flag = __HAL_PWR_GET_FLAG(PWR_FLAG_SB);
+    uint32_t wuf1_flag = __HAL_PWR_GET_FLAG(PWR_FLAG_WUF1);
+    if(sb_flag != 0U) {
+      DebugPrint("[PWR] Standby flag set\r\n");
+    }
+    if(wuf1_flag != 0U) {
+      DebugPrint("[PWR] Wake from WKUP1\r\n");
+    }
+    /* 清掉唤醒标志，避免后续再次进入 Standby 时误判/立即唤醒 */
+    __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF1);
+    if(sb_flag != 0U) {
+      __HAL_PWR_CLEAR_FLAG(PWR_FLAG_SB);
+    }
+
+    uint32_t br_boot = Read_ADC1_Channel(ADC_CHANNEL_1);
+    if(br_boot != 0xFFFFU && ((uint16_t)br_boot) <= BATT_ADC_UNDERVOLT_RAW) {
+      DebugPrint("[UV] Boot undervolt -> enter STANDBY\r\n");
+      Undervolt_EnterStandby();
+    }
+  }
 
   /* 启用升压电路供电 */
   HAL_Delay(100);
@@ -329,42 +364,12 @@ int main(void)
     Charge_Update();
     BattUndervolt_Update();
 
-    /* 欠压：停载、CHG_MOS 拉低；STOP 期间由 RTC Alarm + PA0 上升沿唤醒再测电量 */
+    /* 欠压：停载、CHG_MOS 拉低；进入 STANDBY，由 WKUP1(PA0) 唤醒退出并重新判断欠压 */
     if(g_batt_undervolt) {
-      Undervolt_EnterLowPowerOutputs();
-      while(g_batt_undervolt) {
-        DebugPrint("[UV] enter STOP (RTC ~");
-        DebugPrintDec((uint16_t)UV_STOP_RTC_ALARM_STEP_SEC);
-        DebugPrint("s + EXTI0)\r\n");
-        if(Undervolt_RTC_SetNextAlarm(&hrtc) != HAL_OK) {
-          DebugPrint("[UV] RTC arm failed\r\n");
-        }
-        DebugPrint("[UV] flashPD ON\r\n");
-        /* STOP 前关串口并拉 PA9/PA10 为模拟输入，避免 UART 复用/浮空脚漏电 */
-        HAL_UART_DeInit(&huart1);
-        Undervolt_SetUartPinsAnalog();
-        Undervolt_PrepareExtiPa0();
-        /* 省电：STOP 期间允许 Flash power-down */
-        HAL_PWREx_EnableFlashPowerDown(PWR_FLASHPD_STOP);
-        HAL_PWR_EnterSTOPMode(PWR_MAINREGULATOR_ON, PWR_STOPENTRY_WFI);
-        SystemClock_Config();
-        PeriphCommonClock_Config();
-        Undervolt_RestoreAdcFromExti();
-        HAL_PWREx_DisableFlashPowerDown(PWR_FLASHPD_STOP);
-        MX_USART1_UART_Init();
-        DebugPrint("[UV] flashPD OFF\r\n");
-        __HAL_RTC_CLEAR_FLAG(&hrtc, RTC_CLEAR_ALRAF);
-        DebugPrint("[UV] wake from STOP\r\n");
-
-        uint32_t br = Read_ADC1_Channel(ADC_CHANNEL_1);
-        if(br != 0xFFFFU && (uint16_t)br >= BATT_ADC_UNDERVOLT_RECOVER_RAW) {
-          g_batt_undervolt = 0;
-#if DEBUG_ADC_VERBOSE
-          DebugPrint("[UV] recovered batt OK\r\n");
-#endif
-          break;
-        }
-      }
+      DebugPrint("[UV] undervolt -> enter STANDBY (WKUP1=PA0)\r\n");
+      Undervolt_EnterStandby();
+      /* Standby exit 等价于复位流程，理想情况下不在此处继续运行 */
+      g_batt_undervolt = 0;
       HAL_GPIO_WritePin(BOOST_EN_GPIO_Port, BOOST_EN_Pin, GPIO_PIN_SET);
       HAL_Delay(50);
       if(g_is_night) {
@@ -412,10 +417,14 @@ int main(void)
 
             /* 积木7：白天 CPU 进入 Sleep(WFI)，靠 SysTick 唤醒 */
       /* 进入睡眠前禁用串口以降低功耗 */
+      #if DEBUG_UART_ENABLE
       HAL_UART_DeInit(&huart1);
+      #endif
       HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
       /* 唤醒后重新初始化串口 */
+      #if DEBUG_UART_ENABLE
       MX_USART1_UART_Init();
+      #endif
     }
     /* USER CODE END WHILE */
 
@@ -809,11 +818,17 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 static void DebugPrint(const char *s)
 {
+  if(!DEBUG_UART_PRINT || !DEBUG_UART_ENABLE) {
+    return;
+  }
   HAL_UART_Transmit(&huart1, (uint8_t*)s, strlen(s), 100);
 }
 
 static void DebugPrintHex(const uint8_t *buf, uint8_t len)
 {
+  if(!DEBUG_UART_PRINT || !DEBUG_UART_ENABLE) {
+    return;
+  }
   char hex[3];
   uint8_t i;
   for(i = 0; i < len; i++) {
@@ -824,6 +839,9 @@ static void DebugPrintHex(const uint8_t *buf, uint8_t len)
 
 static void DebugPrintDec(uint16_t val)
 {
+  if(!DEBUG_UART_PRINT || !DEBUG_UART_ENABLE) {
+    return;
+  }
   char buf[6];
   sprintf(buf, "%u", val);
   HAL_UART_Transmit(&huart1, (uint8_t*)buf, strlen(buf), 100);
@@ -1259,12 +1277,48 @@ static void Undervolt_EnterLowPowerOutputs(void)
   /* STOP 欠压停载：让 RF 进入睡眠（不要依赖 g_rf_sleeping 的软件状态，避免 IO 状态不一致） */
   if(g_rf_initialized) {
     RF_Link_Sleep();
-    /* 软件 SPI 三线钉死到安全电平，避免进入低功耗后电平漂移导致 XL2400T 异常唤醒/通信态错乱 */
-    HAL_GPIO_WritePin(GPIOA, RF_CSN_Pin, GPIO_PIN_SET);    /* CSN 高：片选无效 */
-    HAL_GPIO_WritePin(GPIOA, RF_SCK_Pin, GPIO_PIN_RESET);  /* SCK 低 */
-    HAL_GPIO_WritePin(GPIOA, RF_DATA_Pin, GPIO_PIN_RESET); /* DATA 低 */
-    g_rf_sleeping = 1;
   }
+  /* 软件 SPI 三线钉死到安全电平，避免进入低功耗后电平漂移导致 XL2400T 异常唤醒/通信态错乱 */
+  HAL_GPIO_WritePin(GPIOA, RF_CSN_Pin, GPIO_PIN_SET);    /* CSN 高：片选无效 */
+  HAL_GPIO_WritePin(GPIOA, RF_SCK_Pin, GPIO_PIN_RESET);  /* SCK 低 */
+  HAL_GPIO_WritePin(GPIOA, RF_DATA_Pin, GPIO_PIN_RESET); /* DATA 低 */
+  g_rf_sleeping = 1;
+}
+
+static void Undervolt_EnterStandby(void)
+{
+  /* 清掉唤醒标志，避免“进入 Standby 时 WKUP 电平/标志已存在”导致立即再次退出 */
+  __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF1);
+
+  /* 只启用 WKUP1，用 PA0(太阳能电压) 上升沿触发退出 Standby */
+  HAL_PWR_DisableWakeUpPin(PWR_WAKEUP_PIN2);
+  HAL_PWR_DisableWakeUpPin(PWR_WAKEUP_PIN3);
+  HAL_PWR_DisableWakeUpPin(PWR_WAKEUP_PIN4);
+  HAL_PWR_DisableWakeUpPin(PWR_WAKEUP_PIN6);
+  HAL_PWR_EnableWakeUpPin(PWR_WAKEUP_PIN1_HIGH);
+
+  /* 先把业务输出/无线拉到低功耗基准态（降低进入 Standby 前的毛刺电流） */
+  Undervolt_EnterLowPowerOutputs();
+
+  /* Standby 期间用 PWR 内部 PU/PD 硬化 RF 引脚电平 */
+  Undervolt_StandbyHoldRfPins();
+
+  /* 关闭串口并把 UART 引脚改为模拟输入，避免外部未定义电平漏电 */
+  #if DEBUG_UART_ENABLE
+  HAL_UART_DeInit(&huart1);
+  #endif
+  Undervolt_SetUartPinsAnalog();
+
+  /* 进入 Standby 的 GPIO 配置：
+   *  - PA0 必须是数字输入（WKUP1 用），且用下拉锁定低电平
+   *  - PA1 保持模拟输入，降低电流
+   */
+  Undervolt_PrepareStandbyIO();
+
+  HAL_PWR_EnterSTANDBYMode();
+
+  /* 不应返回；若返回则说明 Standby 未成功进入 */
+  while(1) {;}
 }
 
 static void Undervolt_StandbyHoldRfPins(void)
@@ -1318,13 +1372,16 @@ static void Undervolt_PrepareStandbyIO(void)
   HAL_ADC_DeInit(&hadc1);
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
-  g.Mode = GPIO_MODE_ANALOG;
-  g.Pull = GPIO_NOPULL;
-
+  /* PA0：WKUP1 输入必须是数字状态，使用下拉锁定“低电平”基准 */
   g.Pin = GPIO_PIN_0;
+  g.Mode = GPIO_MODE_INPUT;
+  g.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOA, &g);
 
+  /* PA1：电池 ADC 输入用模拟，降低漏电 */
   g.Pin = GPIO_PIN_1;
+  g.Mode = GPIO_MODE_ANALOG;
+  g.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &g);
 }
 

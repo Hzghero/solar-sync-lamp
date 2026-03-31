@@ -5,8 +5,10 @@
 ---
 
 ## 1) 今天验证通过的关键结论
-
 - 欠压进入 `STOP` + `RTC Alarm` 周期唤醒链路稳定：日志显示 `RTC arm currSec -> nextSec` 连续推进，`flashPD ON/OFF` 成对出现。
+- `Standby` 下 `RTC` 会被关闭：无法依赖 `RTC Alarm A` 做“定时唤醒”；如果要深睡后恢复运行，需要改用 `WKUP` 引脚唤醒（本项目：`WKUP1=PA0`，太阳能电压上升触发退出 Standby）。
+- `Standby` 退出来源：外部 `NRST` 复位、`IWDG` 复位、`WKUP` 引脚事件、以及 `LSE` 失效（CSS on LSE）。
+- `Standby` 典型静态电流（数据手册 Table 32）：在 `VDD=2.0~3.6V` 范围内约 `~7~12 uA` 量级（All clocks off），温度/边界条件会使最大值上升。
 - 2.4G 模块（XL2400T）在“浅睡眠窗口”仍可能是百 uA 级，但进入更深低功耗后可到 uA 级，这是正常的功耗层级差异。
 - 欠压低功耗入口对 RF 的处理必须“硬化”：  
   - 无条件下发 `RF_Link_Sleep()`（不要只依赖软件状态变量）  
@@ -23,8 +25,8 @@
 - `HSIKER`：`/4` 给 ADC（降低 ADC 时钟功耗并保持采样稳定）
 
 ### 2.2 为什么这样配
-
-- `RTC` 用 `LSI/LSE` 才能在 `STOP/Standby` 里稳定唤醒（这是硬约束）。
+- `RTC` 用 `LSI/LSE` 才能在 `STOP` 里稳定唤醒（这是硬约束）。
+- `Standby` 模式下 `RTC` 会被关闭，因此不能依赖 `RTC Alarm` 做“定时唤醒”。
 - 主频不追求高性能时，`HSE + HSIKER分频`比“全速跑”更可控，尤其对低功耗和 ADC 噪声更友好。
 
 ### 2.3 关于“有没有 PLL”
@@ -48,6 +50,7 @@
 - `RTC_IRQHandler()` 必须调用 `HAL_RTC_AlarmIRQHandler(&hrtc)`，否则 Alarm 事件不会被 HAL 正确消费。
 - `EXTI0_1_IRQHandler()` 若用于太阳能上升沿唤醒，必须清中断并保证 PA0 在低功耗前配置正确。
 - `Standby` 唤醒是复位流程，不是“从函数返回继续跑”；启动路径要可重入。
+- `Standby` 退出不要依赖 `RTC Alarm A`：因为待机期间 `RTC` 已关闭，应依赖 `WKUP` 引脚触发（本项目：`WKUP1=PA0`）。
 
 ---
 
@@ -70,8 +73,9 @@
    - 低功耗准备窗口  
    - 进入低功耗瞬间  
    - 周期唤醒后稳定段
-4. 检查日志中 `RTC arm` 秒数是否连续递进，确认没有“假唤醒/卡死”。
-5. 低功耗退出后再次验证 RF 通信是否恢复。
+4. 如果使用 `STOP + RTC Alarm`：检查日志中 `RTC arm` 秒数是否连续递进，确认没有“假唤醒/卡死”。
+5. 如果使用 `Standby + WKUP`：检查启动日志中是否出现唤醒来源（例如 `Wake from WKUP1`/`PWR_FLAG_WUF1`），并确认静态电流已回落到 `~7~12 uA` 量级；唤醒后重新判断欠压是否仍成立（决定是否再次进入 Standby）。
+6. 低功耗退出后再次验证 RF 通信是否恢复。
 
 ---
 

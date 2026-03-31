@@ -41,7 +41,7 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-#define FW_VERSION "v2.13.1-STANDBY-RTC"
+#define FW_VERSION "v2.13.5-STANDBY-WKUP1"
 
 /* USER CODE END EC */
 

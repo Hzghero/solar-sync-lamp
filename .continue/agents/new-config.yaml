@@ -1,0 +1,17 @@
+name: DeepSeek Config
+version: 1.0.0
+schema: v1
+
+models:
+  - name: DeepSeek Coder
+    provider: openai
+    model: deepseek-coder
+    apiKey: sk-d9ef9cde1b06451ca651bdfbfbea3c5a  # ← 替换成你复制的 DeepSeek API Key
+    apiBase: https://api.deepseek.com/v1
+
+tabAutocompleteModel:
+  - name: DeepSeek Coder
+    provider: openai
+    model: deepseek-coder
+    apiKey: sk-d9ef9cde1b06451ca651bdfbfbea3c5a # ← 同样替换
+    apiBase: https://api.deepseek.com/v1

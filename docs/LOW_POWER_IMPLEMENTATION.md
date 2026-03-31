@@ -52,9 +52,9 @@
 
 ## 4. 后续优化规划
 
-### 4.0 欠压 Standby + RTC 周期唤醒（v2.13.x）
+### 4.0 欠压 Standby + WKUP1 事件唤醒（v2.13.x）
 
-**目标**：电池欠压（或你人为将 PA1 拉到极低）时，停止放电负载并进入更深的低功耗，靠 RTC Alarm A 周期唤醒（Standby exit=复位启动）重测电池是否恢复。
+**目标**：电池欠压（或你人为将 PA1 拉到极低）时，停止放电负载并进入更深的低功耗，靠 `WKUP1(PA0)` 在“太阳能电压上升”时唤醒退出 Standby（Standby exit=复位启动）后重测电池是否恢复。
 
 **关键结论（实测驱动排障后的经验）**：
 - `RF_Link_Sleep()` 可以让 XL2400T 进入极低电流，但**进入 Standby 后若 GPIO 变为高阻/漂移，RF 可能会被异常边沿唤醒**，出现“Standby 反而 600uA”这种假象。
@@ -66,7 +66,7 @@
 **实现要点**（代码侧）：
 - 进入 Standby 前：无条件下发 `RF_Link_Sleep()`，并把 RF 的 CSN/SCK/DATA 置为静态电平
 - 进入 Standby 时：启用 `HAL_PWREx_EnableGPIOPullUp/Down()` 并 `HAL_PWREx_EnablePullUpPullDownConfig()`，确保 Standby 期间引脚仍保持
-- 通过“WFI 等待窗口（例如 3~9 秒）”验证 RF 睡眠电流是否真的降下来，再进入 Standby 做最终确认
+- （可选，用于功耗 Proof）若你想观测“RF sleep 回落”，可在最终进入 Standby 之前先做短暂 `WFI` 观测窗口
 
 **验证结果（你这次的 Proof 对照测量）**：
 - `UV_RF_PROOF_MODE=1`（`HAL_Delay` 忙等）：9 秒窗口约 `190 uA`；Standby 后约 `1.6 uA`
