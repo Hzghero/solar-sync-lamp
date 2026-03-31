@@ -51,7 +51,7 @@
 #define SOLAR_ADC_NIGHT_THRESHOLD   360U
 #define SOLAR_ADC_DAY_THRESHOLD    496U
 #define DAYNIGHT_SAMPLE_INTERVAL_MS 1000U
-#define DAYNIGHT_HOLD_MS            3000U
+#define DAYNIGHT_HOLD_MS            0U
 
 #define BATT_ADC_OVERCHARGE_RAW     1924U
 #define BATT_ADC_REENABLE_RAW      1676U
@@ -80,6 +80,32 @@
 #define DEBUG_UART_ENABLE 1   /* 1=初始化USART1；0=不初始化USART1(并将PA9/PA10设为模拟输入降漏电) */
 #define DEBUG_UART_PRINT  1   /* 1=允许串口打印；0=所有 DebugPrint*() 直接return，不发送任何字节 */
 
+/* 白天低功耗策略：STOP + RTC 5s 周期唤醒 + PA0 EXTI 立刻唤醒 */
+#define DAY_STOP_RTC_ALARM_STEP_SEC 5U
+
+/* 白天 ADC 日夜判断打印频率：
+ * dn_cnt >= DAY_ADC_PRINT_EVERY_N 时才打印一次 [ADC] solar=... night=...
+ * dn_cnt 计数发生在 DayNight_Update 的“非调试窗口”分支里。
+ */
+#define DAY_ADC_PRINT_EVERY_N 1U
+
+/* 白天 [ADC] 打印是否附带电池电压（PA1/CH1）：
+ * 0=只打印 solar（默认，最低开销）
+ * 1=每次打印 solar 时额外采样 batt 并在同一行打印 batt=...
+ */
+#define DAY_ADC_PRINT_WITH_BATT 1U
+
+/* 日夜翻转防误触发确认：在“准备翻转”的瞬间，额外开一个短确认窗口做多次采样。
+ * - DAYNIGHT_FALSE_TRIG_CONFIRM_WINDOW_MS：确认窗口时间（默认 1000ms）
+ * - DAYNIGHT_FALSE_TRIG_CONFIRM_MIN_HITS：在窗口内至少命中阈值的次数
+ * - DAYNIGHT_FALSE_TRIG_CONFIRM_MAX_READS：窗口内最多采样次数（上限，避免阻塞过久）
+ *
+ * 注意：Read_ADC1_Channel 内部会有少量延时，因此这些参数会直接影响一次翻转判定的耗时。
+ */
+#define DAYNIGHT_FALSE_TRIG_SUPPRESS_ENABLE       1U
+#define DAYNIGHT_FALSE_TRIG_CONFIRM_WINDOW_MS  1000U
+#define DAYNIGHT_FALSE_TRIG_CONFIRM_MIN_HITS      2U
+#define DAYNIGHT_FALSE_TRIG_CONFIRM_MAX_READS     4U
 #define DEBUG_ADC_VERBOSE  1   /* 调试：1=打印 ADC 采样值，完成后可改为 0 精简 */
 #define DEBUG_SYNC_VERBOSE 1   /* 调试：1=打印详细同步信息，0=只打印关键事件 */
 #define DEBUG_LED_VERBOSE  1   /* 调试：1=打印LED状态，0=不打印 */
@@ -164,9 +190,13 @@ static void Undervolt_PrepareStandbyIO(void);
 static void Undervolt_StandbyHoldRfPins(void);
 static void Undervolt_Wait_WFI_Ms(uint32_t ms);
 static HAL_StatusTypeDef Undervolt_RTC_SetNextAlarm(RTC_HandleTypeDef *hrtc);
+static HAL_StatusTypeDef Day_RTC_SetNextAlarm(RTC_HandleTypeDef *hrtc_p);
+static void Day_PrepareStopWakeSources(void);
+static void Day_RestoreFromStopWake(void);
 static uint32_t Read_ADC1_Channel(uint32_t channel);  /* 指定通道读 ADC1 一次，PA0=ch0 太阳能，PA1=ch1 电池 */
 static void Test_ADC_Channels(void);                   /* ADC通道切换测试函数 */
 static uint8_t Read_ADC1_DualChannel(uint32_t* solar_raw, uint32_t* batt_raw);  /* 扫描模式读取双通道 */
+static uint8_t DayNight_ConfirmTransition(uint8_t toNight);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -415,16 +445,36 @@ int main(void)
         g_rf_sleeping = 1;
       }
 
-            /* 积木7：白天 CPU 进入 Sleep(WFI)，靠 SysTick 唤醒 */
-      /* 进入睡眠前禁用串口以降低功耗 */
-      #if DEBUG_UART_ENABLE
-      HAL_UART_DeInit(&huart1);
-      #endif
-      HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
-      /* 唤醒后重新初始化串口 */
-      #if DEBUG_UART_ENABLE
-      MX_USART1_UART_Init();
-      #endif
+      /* 白天改为 STOP 模式：
+       * - RTC 每 5 秒唤醒一次做日夜/充电/欠压判断
+       * - PA0 EXTI 上升沿可立刻唤醒（太阳能快速变化时更灵敏）
+       * - 进入 STOP 前暂停 SysTick，避免 1ms 频繁唤醒导致白天电流偏大
+       */
+      Day_PrepareStopWakeSources();
+      if(Day_RTC_SetNextAlarm(&hrtc) != HAL_OK) {
+        DebugPrint("[DAY] RTC arm failed\r\n");
+      }
+
+      HAL_PWREx_EnableFlashPowerDown(PWR_FLASHPD_STOP);
+      HAL_SuspendTick();
+      HAL_PWR_EnterSTOPMode(PWR_MAINREGULATOR_ON, PWR_STOPENTRY_WFI);
+      SystemClock_Config();
+      PeriphCommonClock_Config();
+
+      /* STOP 后时钟链路被重配，SysTick reload 可能需要重新初始化，
+       * 否则 HAL_GetTick()/DayNight_Update 的 1s 节流逻辑会被错误节流。
+       */
+      if(HAL_InitTick(TICK_INT_PRIORITY) != HAL_OK) {
+        Error_Handler();
+      }
+      HAL_ResumeTick();
+
+      /* 对齐日夜采样节流计时基准 */
+      uint32_t _dayWakeTick = HAL_GetTick();
+      /* 让 DayNight_Update 这次 wake 后立刻可采样，避免 HAL_GetTick 节拍/重配误差导致“额外等待一轮” */
+      g_last_daynight_tick = (_dayWakeTick > DAYNIGHT_SAMPLE_INTERVAL_MS) ? (_dayWakeTick - DAYNIGHT_SAMPLE_INTERVAL_MS) : 0U;
+      Day_RestoreFromStopWake();
+      HAL_PWREx_DisableFlashPowerDown(PWR_FLASHPD_STOP);
     }
     /* USER CODE END WHILE */
 
@@ -1172,6 +1222,48 @@ static uint32_t Read_ADC1_Channel(uint32_t channel)
   return raw;
 }
 
+/* 日夜翻转前的短时防误触发确认：在一个确认窗口内多次采样 PA0。
+ * toNight=1 表示准备从白天翻到夜间；toNight=0 表示从夜间翻到白天。
+ */
+static uint8_t DayNight_ConfirmTransition(uint8_t toNight)
+{
+#if DAYNIGHT_FALSE_TRIG_SUPPRESS_ENABLE
+  uint32_t start = HAL_GetTick();
+  uint32_t hits = 0U;
+  uint32_t reads = 0U;
+
+  while(((HAL_GetTick() - start) < DAYNIGHT_FALSE_TRIG_CONFIRM_WINDOW_MS) &&
+        (reads < DAYNIGHT_FALSE_TRIG_CONFIRM_MAX_READS))
+  {
+    uint32_t raw = Read_ADC1_Channel(ADC_CHANNEL_0);
+    if(raw == 0xFFFFU) {
+      break;
+    }
+
+    uint16_t v = (uint16_t)raw;
+    if(toNight != 0U) {
+      if(v < SOLAR_ADC_NIGHT_THRESHOLD) {
+        hits++;
+      }
+    } else {
+      if(v > SOLAR_ADC_DAY_THRESHOLD) {
+        hits++;
+      }
+    }
+
+    reads++;
+    if(hits >= DAYNIGHT_FALSE_TRIG_CONFIRM_MIN_HITS) {
+      break;
+    }
+  }
+
+  return (hits >= DAYNIGHT_FALSE_TRIG_CONFIRM_MIN_HITS) ? 1U : 0U;
+#else
+  (void)toNight;
+  return 1U;
+#endif
+}
+
 /**
  * @brief  扫描模式读取双通道ADC值（太阳能和电池）
  * @param  solar_raw: 太阳能电压ADC原始值（PA0/CH0）
@@ -1194,20 +1286,16 @@ static uint8_t Read_ADC1_DualChannel(uint32_t* solar_raw, uint32_t* batt_raw)
     return 1;
   }
   
-    /* 等待序列转换完成 */
-  if (HAL_ADC_PollForConversion(&hadc1, 100) != HAL_OK) {
-    HAL_ADC_Stop(&hadc1);
-    return 1;
+  /* 扫描模式下需要“每个转换都 Poll 一次”再 GetValue，不能只 Poll 一次就连读两次寄存器。
+   * 否则两个通道很容易读到同一个值（你日志里 solar==batt 的现象）。
+   */
+  for(uint32_t i = 0; i < 2U; i++) {
+    if (HAL_ADC_PollForConversion(&hadc1, 100) != HAL_OK) {
+      HAL_ADC_Stop(&hadc1);
+      return 1;
+    }
+    adc_values[i] = (uint32_t)HAL_ADC_GetValue(&hadc1);
   }
-  
-  /* 读取两个通道的值 */
-  /* 注意：在扫描模式下，HAL_ADC_GetValue()会返回当前转换的值 */
-  /* 我们需要读取两次来获取两个通道的值 */
-  adc_values[0] = HAL_ADC_GetValue(&hadc1);  /* 第一个转换：CH0 */
-  
-  /* 对于STM32C0，在扫描模式下，需要再次调用GetValue获取第二个通道 */
-  /* 或者使用DMA/中断方式，这里我们简单处理 */
-  adc_values[1] = HAL_ADC_GetValue(&hadc1);  /* 第二个转换：CH1 */
   
   /* 停止ADC */
   HAL_ADC_Stop(&hadc1);
@@ -1451,7 +1539,85 @@ static HAL_StatusTypeDef Undervolt_RTC_SetNextAlarm(RTC_HandleTypeDef *hrtc_p)
   return HAL_RTC_SetAlarm_IT(hrtc_p, &sAlarm, RTC_FORMAT_BIN);
 }
 
-/* 日/夜检测：读 PA0 太阳能板电压，滞回 + 持续 3s 确认后翻转 (规格书 §5)，积木2 */
+static HAL_StatusTypeDef Day_RTC_SetNextAlarm(RTC_HandleTypeDef *hrtc_p)
+{
+  RTC_TimeTypeDef rtcTime = {0};
+  RTC_DateTypeDef rtcDate = {0};
+  RTC_AlarmTypeDef sAlarm = {0};
+  uint8_t currSec;
+  uint8_t newSec;
+  uint8_t nextSec;
+
+  if(HAL_RTC_WaitForSynchro(hrtc_p) != HAL_OK) {
+    return HAL_ERROR;
+  }
+  if(HAL_RTC_GetTime(hrtc_p, &rtcTime, RTC_FORMAT_BIN) != HAL_OK) {
+    return HAL_ERROR;
+  }
+  (void)HAL_RTC_GetDate(hrtc_p, &rtcDate, RTC_FORMAT_BIN);
+
+  currSec = rtcTime.Seconds;
+  newSec = currSec;
+  {
+    uint32_t tickStart = HAL_GetTick();
+    while((newSec == currSec) && ((HAL_GetTick() - tickStart) < 200U)) {
+      if(HAL_RTC_GetTime(hrtc_p, &rtcTime, RTC_FORMAT_BIN) != HAL_OK) {
+        break;
+      }
+      (void)HAL_RTC_GetDate(hrtc_p, &rtcDate, RTC_FORMAT_BIN);
+      newSec = rtcTime.Seconds;
+    }
+  }
+
+  nextSec = (uint8_t)((newSec + DAY_STOP_RTC_ALARM_STEP_SEC) % 60U);
+
+  sAlarm.Alarm = RTC_ALARM_A;
+  sAlarm.AlarmTime.Hours = 0U;
+  sAlarm.AlarmTime.Minutes = 0U;
+  sAlarm.AlarmTime.Seconds = nextSec;
+  sAlarm.AlarmTime.SubSeconds = 0U;
+  sAlarm.AlarmTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+  sAlarm.AlarmTime.StoreOperation = RTC_STOREOPERATION_RESET;
+  sAlarm.AlarmMask = RTC_ALARMMASK_DATEWEEKDAY | RTC_ALARMMASK_HOURS | RTC_ALARMMASK_MINUTES;
+  sAlarm.AlarmSubSecondMask = RTC_ALARMSUBSECONDMASK_ALL;
+  sAlarm.AlarmDateWeekDaySel = RTC_ALARMDATEWEEKDAYSEL_DATE;
+  sAlarm.AlarmDateWeekDay = 0x1U;
+
+  /* 日间 STOP 调试：确认 RTC Alarm A 是否按预期步进 */
+  DebugPrint("[DAY] RTC arm currSec=");
+  DebugPrintDec((uint16_t)newSec);
+  DebugPrint(" nextSec=");
+  DebugPrintDec((uint16_t)nextSec);
+  DebugPrint(" step=");
+  DebugPrintDec((uint16_t)DAY_STOP_RTC_ALARM_STEP_SEC);
+  DebugPrint("\r\n");
+
+  return HAL_RTC_SetAlarm_IT(hrtc_p, &sAlarm, RTC_FORMAT_BIN);
+}
+
+static void Day_PrepareStopWakeSources(void)
+{
+  #if DEBUG_UART_ENABLE
+  HAL_UART_DeInit(&huart1);
+  #endif
+  Undervolt_SetUartPinsAnalog();
+
+  /* 复用已验证的 STOP 唤醒 IO 处理：PA0=EXTI上升沿，PA1=模拟输入 */
+  Undervolt_PrepareExtiPa0();
+}
+
+static void Day_RestoreFromStopWake(void)
+{
+  DebugPrint("[DAY] STOP wake\r\n");
+  Undervolt_RestoreAdcFromExti();
+  __HAL_RTC_CLEAR_FLAG(&hrtc, RTC_CLEAR_ALRAF);
+
+  #if DEBUG_UART_ENABLE
+  MX_USART1_UART_Init();
+  #endif
+}
+
+/* 日/夜检测：读 PA0 太阳能板电压，滞回 + 持续确认（由 DAYNIGHT_HOLD_MS 控制）后翻转 (规格书 §5)，积木2 */
 static void DayNight_Update(void)
 {
   uint32_t now = HAL_GetTick();
@@ -1467,13 +1633,24 @@ static void DayNight_Update(void)
   uint16_t adc_val = (uint16_t)raw;
   uint8_t prev = g_is_night;
 
-    if(adc_val < SOLAR_ADC_NIGHT_THRESHOLD) {
+  if(adc_val < SOLAR_ADC_NIGHT_THRESHOLD) {
     /* 条件满足「夜间」：需持续 3s 才从白天切到夜间 */
     if(g_is_night) {
       g_daynight_hold_until_tick = 0;
     } else {
       if(g_daynight_hold_until_tick == 0) {
-        g_daynight_hold_until_tick = now + DAYNIGHT_HOLD_MS;
+        if(DAYNIGHT_HOLD_MS == 0U) {
+          /* 允许“立即翻转”：第一次采样达阈值就直接切换（增加短时防误触发确认） */
+          if(DayNight_ConfirmTransition(1U)) {
+            g_is_night = 1;
+            g_daynight_hold_until_tick = 0;
+            g_night_start_tick = now;
+            g_night_debug_window = 1;
+            DebugPrint("[NIGHT] Debug window started (6s)\r\n");
+          }
+        } else {
+          g_daynight_hold_until_tick = now + DAYNIGHT_HOLD_MS;
+        }
       } else if(now >= g_daynight_hold_until_tick) {
         /* 检测到从白天切换到夜间，启动调试窗口 */
         uint8_t prev_night = g_is_night;
@@ -1494,7 +1671,16 @@ static void DayNight_Update(void)
       g_daynight_hold_until_tick = 0;
     } else {
       if(g_daynight_hold_until_tick == 0) {
-        g_daynight_hold_until_tick = now + DAYNIGHT_HOLD_MS;
+        if(DAYNIGHT_HOLD_MS == 0U) {
+          /* 允许“立即翻转”：第一次采样达阈值就直接切换（增加短时防误触发确认） */
+          if(DayNight_ConfirmTransition(0U)) {
+            g_is_night = 0;
+            g_daynight_hold_until_tick = 0;
+            g_night_debug_window = 0;
+          }
+        } else {
+          g_daynight_hold_until_tick = now + DAYNIGHT_HOLD_MS;
+        }
       } else if(now >= g_daynight_hold_until_tick) {
         g_is_night = 0;
         g_daynight_hold_until_tick = 0;
@@ -1511,6 +1697,11 @@ static void DayNight_Update(void)
 #if DEBUG_ADC_VERBOSE
   if(prev != g_is_night) {
     DebugPrint(g_is_night ? "->Night\r\n" : "->Day\r\n");
+    if(g_is_night == 0U) {
+      DebugPrint("[DAY] ADC printEveryN=");
+      DebugPrintDec(DAY_ADC_PRINT_EVERY_N);
+      DebugPrint("\r\n");
+    }
   }
   
   /* 检查是否在夜间调试窗口内（夜间开始后6秒） */
@@ -1550,7 +1741,7 @@ static void DayNight_Update(void)
   } else {
     /* 不在调试窗口：正常单通道采样显示 */
     static uint8_t dn_cnt = 0;
-    if(++dn_cnt >= 5) {
+    if(++dn_cnt >= DAY_ADC_PRINT_EVERY_N) {
       dn_cnt = 0;
       DebugPrint("[ADC] solar=");
       DebugPrintDec(adc_val);
@@ -1562,7 +1753,26 @@ static void DayNight_Update(void)
       DebugPrintDec((uint16_t)((voltage_mv % 1000) / 100));
       DebugPrintDec((uint16_t)((voltage_mv % 100) / 10));
       
-      DebugPrint("V) night=");
+      DebugPrint("V)");
+
+#if DAY_ADC_PRINT_WITH_BATT
+      {
+        uint32_t batt_raw = Read_ADC1_Channel(ADC_CHANNEL_1);
+        if(batt_raw != 0xFFFFU) {
+          DebugPrint(" batt=");
+          DebugPrintDec((uint16_t)batt_raw);
+          DebugPrint("(");
+          uint32_t batt_mv = (batt_raw * 3300) / 4095;
+          DebugPrintDec((uint16_t)(batt_mv / 1000));
+          DebugPrint(".");
+          DebugPrintDec((uint16_t)((batt_mv % 1000) / 100));
+          DebugPrintDec((uint16_t)((batt_mv % 100) / 10));
+          DebugPrint("V)");
+        }
+      }
+#endif
+
+      DebugPrint(" night=");
       DebugPrint(g_is_night ? "1" : "0");
       if(g_daynight_hold_until_tick != 0) DebugPrint(" hold");
       DebugPrint("\r\n");

@@ -6,6 +6,8 @@
 
 ## 1) 今天验证通过的关键结论
 - 欠压进入 `STOP` + `RTC Alarm` 周期唤醒链路稳定：日志显示 `RTC arm currSec -> nextSec` 连续推进，`flashPD ON/OFF` 成对出现。
+- 白天从 `SLEEP(WFI)` 改为 `STOP + RTC(约 5s)` 后：当“没有唤醒事件”时，静态段实测约 **150 uA**（显著优于之前 mA 级表现）。
+- 白天日/夜翻转确认逻辑：将 `DAYNIGHT_HOLD_MS` 调整为 0，使得第一次采样跨阈值后即可翻转（不再等待 3s 确认窗口）。
 - `Standby` 下 `RTC` 会被关闭：无法依赖 `RTC Alarm A` 做“定时唤醒”；如果要深睡后恢复运行，需要改用 `WKUP` 引脚唤醒（本项目：`WKUP1=PA0`，太阳能电压上升触发退出 Standby）。
 - `Standby` 退出来源：外部 `NRST` 复位、`IWDG` 复位、`WKUP` 引脚事件、以及 `LSE` 失效（CSS on LSE）。
 - `Standby` 典型静态电流（数据手册 Table 32）：在 `VDD=2.0~3.6V` 范围内约 `~7~12 uA` 量级（All clocks off），温度/边界条件会使最大值上升。
