@@ -65,6 +65,11 @@
 | v2.13.3 | 2026-03-30 | Proof 对照测量补充：`WFI(SLEEP)`/忙等浅睡眠窗口电流约 190uA/160uA；进入 `enter STANDBY now` 后电流瞬降至约 1.6uA（验证 Standby 引脚保持机制已真正生效） | docs/XL2400T_STANDBY_TRAPS_AND_TIPS.md, docs/LOW_POWER_IMPLEMENTATION.md |
 | v2.13.4 | 2026-03-30 | 经验沉淀：新增 `STM32C011` 低功耗开发清单（RCC/低功耗模式/中断唤醒差异/RF易踩坑/验收步骤），并补充当日 STOP 回归验证日志结论 | docs/STM32C011_LOW_POWER_CHECKLIST.md, docs/XL2400T_STANDBY_TRAPS_AND_TIPS.md, CHANGELOG_INDEX.md |
 | v2.13.5 | 2026-03-30 | 欠压深睡唤醒落地：利用数据手册结论 `Standby` 下 `RTC` 会停机，改为用 `WKUP1(PA0)` 事件唤醒退出 Standby；同时增加启动早期欠压判断和唤醒标志打印，避免 BOOST/RF 打开带来的功耗抖动 | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h, docs/STM32C011_LOW_POWER_CHECKLIST.md, CHANGELOG_INDEX.md |
+| v2.13.9 | 2026-04-06 | 同步省电策略落地：新增 ACQUIRE/LOCKED_SPARSE 状态机，锁定后按 `SYNC_RX_EVERY_N_CYCLES` 跨周期开 RX；加入锁定/失锁判据与“对撞无包容忍窗口”，失锁自动回退连续接收重同步 | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h, docs/SYNC_SPARSE_RX_POWER_SAVE_PLAN.md, CHANGELOG_INDEX.md |
+| v2.15.0 | 2026-04-09 | 新增强制省电巡检与可开关 TX 偏移探测：上电先连续 5 周期开 RX，无包则进入 30 关 RX + 2 开 RX 探测循环；探测期可选 20ms TX 偏移（可一键关闭）用于缓解长期对撞 | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h, docs/LOG_MACRO_SWITCH_GUIDE_2026-04-08.md, CHANGELOG_INDEX.md |
+| v2.15.1 | 2026-04-09 | 强制巡检参数温和化：改为 18 关 RX + 4 开 RX；新增“连续 2 轮探测失败才回睡眠”机制，减少过早回睡导致的长时间错开；DIAG 新增 `pm` 轮次计数便于观测 | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h, CHANGELOG_INDEX.md |
+| v2.15.2 | 2026-04-09 | FSCAN 稳定性与文档对齐：进入 FSCAN 清零历史计数、FSCAN 期间屏蔽 bad-phase 退锁抖动；新增“今日改进点”文档并按差异化方式更新规格书同步章节 | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h, docs/IMPROVEMENTS_2026-04-09_SYNC_STRATEGY.md, SPECIFICATION_v2.0.0.md, CHANGELOG_INDEX.md |
+| v2.15.3 | 2026-04-09 | ADC 参考与阈值一键双档宏化：新增 `ADC_REF_SELECT_3V0`（0=3.3V/1=3.0V）单宏切换；阈值改为 mV 定义并自动换算 RAW，所有电压显示统一走 `ADC_MV_FROM_RAW()`，避免手工改阈值带来的错配风险 | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h, CHANGELOG_INDEX.md, docs/IMPROVEMENTS_2026-04-09_SYNC_STRATEGY.md |
 
 ---
 

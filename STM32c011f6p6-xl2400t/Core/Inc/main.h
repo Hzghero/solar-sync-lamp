@@ -41,7 +41,7 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-#define FW_VERSION "v2.13.8-DAY-ADC-BATTDBG"
+#define FW_VERSION "v2.15.3-AdcRefSelect3V0or3V3"
 
 /* USER CODE END EC */
 

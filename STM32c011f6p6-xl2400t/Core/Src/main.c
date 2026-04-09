@@ -41,25 +41,91 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define SYNC_CYCLE_MS       900U    /* 同步周期 900ms */
-#define SYNC_LED_ON_MS      100U    /* LED 亮灯时间 100ms */
+#define SYNC_LED_ON_MS      60U    /* LED 亮灯时间 100ms */
 #define SYNC_TX_TIME_MS     450U    /* TX 发送时间：所有节点固定 450ms */
 #define SYNC_TX_DELAY_MS    6U      /* 传输延迟补偿 */
 #define SYNC_PKT_SIZE       4U      /* AA 55 + 2字节相位 */
 #define RF_TX_CHANNEL       76U     /* XL2400T TX 频道 76 (2476 MHz) */
 #define RF_RX_CHANNEL       75U     /* XL2400T RX 频道 75 (2475 MHz) - 相邻频道避免自干扰 */
 
-#define SOLAR_ADC_NIGHT_THRESHOLD   360U
-#define SOLAR_ADC_DAY_THRESHOLD    496U
-#define DAYNIGHT_SAMPLE_INTERVAL_MS 1000U
-#define DAYNIGHT_HOLD_MS            0U
+/* 同步省电策略参数：锁定后跨周期打开接收，失锁后回退连续接收 */
+#define SYNC_RX_EVERY_N_CYCLES         4U   /* 锁定后每4个周期开1次接收 */
+#define SYNC_LOCK_ERR_TH_MS           20U   /* 锁定判据：相位误差阈值 */
+#define SYNC_LOCK_NEED_GOOD_COUNT      5U   /* 常规模式：连续良好次数达到后进入锁定态 */
+#define SYNC_UNLOCK_ERR_TH_MS         60U   /* 失锁判据：相位误差阈值 */
+#define SYNC_UNLOCK_NEED_BAD_COUNT     2U   /* 连续坏包次数达到后回退捕获态 */
+#define SYNC_UNLOCK_MISS_COUNT         2U   /* 计划接收周期连续丢包次数达到后回退捕获态 */
+#define SYNC_LOCK_ASSUME_NO_RX_CYCLES  6U   /* 锁定后允许短期无包（对撞场景） */
 
-#define BATT_ADC_OVERCHARGE_RAW     1924U
-#define BATT_ADC_REENABLE_RAW      1676U
-#define CHARGE_SAMPLE_INTERVAL_MS  3000U
+/* 对撞保持策略：锁定后若长期收不到包，仍维持“稀疏接收”而不是退回 ACQUIRE
+ * 目的：在双方高度同步且易对撞时，继续获得省电收益（先跑效果，再逐步收敛）
+ */
+#define SYNC_COLLISION_HOLD_ENABLE      1U   /* 1=启用对撞保持，0=按原逻辑 miss 超时后退回 ACQUIRE */
+#define SYNC_COLLISION_HOLD_MIN_NO_RX   5U   /* 连续无包达到该值后，miss 超时时继续保持 LOCKED_SPARSE */
 
-/* 电池 ~0.9V 提前停载（与 ME2188 约 0.7V 硬截止、回升约 0.9V 再配合）；ADC 折算同 Charge_Update 3.3V 参考 */
-#define BATT_ADC_UNDERVOLT_RAW          1116U  /* ≈0.90V */
-#define BATT_ADC_UNDERVOLT_RECOVER_RAW  1215U  /* ≈0.98V 滞回，避免抖动 */
+/* 快速入锁策略（用于“先跑起来看省电效果”）：
+ * 1=启用：ACQ态只要收到 1 次有效好包就进入 LOCKED_SPARSE
+ * 0=关闭：使用常规 SYNC_LOCK_NEED_GOOD_COUNT
+ */
+#define SYNC_FAST_LOCK_ENABLE          1U
+#define SYNC_FAST_LOCK_GOOD_COUNT      1U
+
+/* 强制省电巡检策略（上电后可在“无包”场景下自动进入关RX巡检循环）
+ * 流程：
+ * 1) 上电先连续开 RX SYNC_BOOT_ACQ_CYCLES 个周期，尝试快速捕获
+ * 2) 若始终无有效包，则进入“关RX-SLEEP + 开RX-PROBE”循环
+ *    - 关RX: SYNC_FORCED_SLEEP_CYCLES 个周期
+ *    - 开RX探测: SYNC_FORCED_PROBE_RX_CYCLES 个周期
+ * 3) 探测窗口任一周期收到有效包，立即退出强制巡检，回到 ACQUIRE 收敛
+ */
+#define SYNC_FORCED_SCAN_ENABLE            1U
+#define SYNC_BOOT_ACQ_CYCLES               5U
+#define SYNC_FORCED_SLEEP_CYCLES          18U   /* 温和版：关RX窗口缩短，减少“长时间错开”体感 */
+#define SYNC_FORCED_PROBE_RX_CYCLES        4U   /* 温和版：单次探测窗口拉长，提升捕获概率 */
+#define SYNC_FORCED_PROBE_MISS_ROUNDS_TO_SLEEP 2U /* 连续探测失败多少轮后才回到关RX窗口 */
+
+/* TX 偏移探测开关（用于打破长期对撞）
+ * - 0: 关闭偏移，TX 固定在 SYNC_TX_TIME_MS
+ * - 1: 开启偏移；偏移量由 SYNC_TX_DITHER_OFFSET_MS 指定
+ * 若只想在“强制巡检的 PROBE 窗口”使用偏移，可把 SYNC_TX_DITHER_PROBE_ONLY 设为 1。
+ */
+#define SYNC_TX_DITHER_ENABLE              1U
+#define SYNC_TX_DITHER_OFFSET_MS          20U   /* 用户要求：偏移达到 20ms */
+#define SYNC_TX_DITHER_PROBE_ONLY          1U
+
+/* ADC 参考电压一键切换：
+ * 0 = 3.3V（默认）
+ * 1 = 3.0V
+ */
+#define ADC_REF_SELECT_3V0               0U
+#if ADC_REF_SELECT_3V0
+#define ADC_REF_MV                    3000U
+#else
+#define ADC_REF_MV                    3300U
+#endif
+#define ADC_MAX_COUNT                 4095U
+#define ADC_RAW_FROM_MV(mv) ((uint16_t)((((uint32_t)(mv)) * ADC_MAX_COUNT + (ADC_REF_MV / 2U)) / ADC_REF_MV))
+#define ADC_MV_FROM_RAW(raw) ((uint32_t)((((uint32_t)(raw)) * ADC_REF_MV) / ADC_MAX_COUNT))
+
+/* 阈值按“实际电压(mV)”定义，RAW 随 ADC_REF_MV 自动换算 */
+#define SOLAR_NIGHT_THRESHOLD_MV      290U
+#define SOLAR_DAY_THRESHOLD_MV        400U
+#define SOLAR_ADC_NIGHT_THRESHOLD     ADC_RAW_FROM_MV(SOLAR_NIGHT_THRESHOLD_MV)
+#define SOLAR_ADC_DAY_THRESHOLD       ADC_RAW_FROM_MV(SOLAR_DAY_THRESHOLD_MV)
+#define DAYNIGHT_SAMPLE_INTERVAL_MS  1000U
+#define DAYNIGHT_HOLD_MS              0U
+
+#define BATT_OVERCHARGE_MV           1550U
+#define BATT_REENABLE_MV             1350U
+#define BATT_ADC_OVERCHARGE_RAW      ADC_RAW_FROM_MV(BATT_OVERCHARGE_MV)
+#define BATT_ADC_REENABLE_RAW        ADC_RAW_FROM_MV(BATT_REENABLE_MV)
+#define CHARGE_SAMPLE_INTERVAL_MS    3000U
+
+/* 电池 ~0.9V 提前停载（与 ME2188 约 0.7V 硬截止、回升约 0.9V 再配合） */
+#define BATT_UNDERVOLT_MV             900U
+#define BATT_UNDERVOLT_RECOVER_MV     980U
+#define BATT_ADC_UNDERVOLT_RAW       ADC_RAW_FROM_MV(BATT_UNDERVOLT_MV)
+#define BATT_ADC_UNDERVOLT_RECOVER_RAW ADC_RAW_FROM_MV(BATT_UNDERVOLT_RECOVER_MV)
 #define BATT_UV_SAMPLE_MS             500U   /* 两次确认间隔 */
 
 #define UV_STOP_RTC_ALARM_STEP_SEC   5U    /* 欠压 STOP 期间 RTC Alarm A 周期间隔（秒） */
@@ -79,6 +145,20 @@
 
 #define DEBUG_UART_ENABLE 1   /* 1=初始化USART1；0=不初始化USART1(并将PA9/PA10设为模拟输入降漏电) */
 #define DEBUG_UART_PRINT  1   /* 1=允许串口打印；0=所有 DebugPrint*() 直接return，不发送任何字节 */
+
+/* 串口日志总开关与分组开关（便于按需开启/关闭）
+ * 说明：
+ * - 以下宏仅控制“打印内容”，不影响功能逻辑。
+ * - 想恢复某类日志时，把对应宏改为 1 即可。
+ */
+#define LOG_FW_VERSION_ENABLE       1   /* 固件版本号打印（建议始终保持 1） */
+#define LOG_BOOT_INFO_ENABLE        0   /* 启动/电源流程日志（PWR/UV/RF Init/TX固定窗口） */
+#define LOG_SYNC_SCHEDULE_ENABLE    1   /* 每周期调度日志：[SCH]，用于观察 RX ON/OFF */
+#define LOG_SYNC_LOCK_DIAG_ENABLE   1   /* 锁定诊断日志：[DIAG] good/bad/miss/no_rx/state */
+#define LOG_SYNC_COLLISION_HOLD_ENABLE 0 /* 对撞保持事件日志：[SYNC] COLLISION-HOLD...（测流建议关） */
+#define LOG_SYNC_RXTX_VERBOSE       1  /* 同步细节日志：[TX]/RX/[ADJ]/[CYCLE]（较多，测流时建议关） */
+#define LOG_LED_VERBOSE_ENABLE      0   /* LED 详细日志 */
+#define LOG_ADC_VERBOSE_ENABLE      0   /* ADC/充电/欠压详细日志（较多，测流时建议关） */
 
 /* 白天低功耗策略：STOP + RTC 5s 周期唤醒 + PA0 EXTI 立刻唤醒 */
 #define DAY_STOP_RTC_ALARM_STEP_SEC 5U
@@ -106,10 +186,13 @@
 #define DAYNIGHT_FALSE_TRIG_CONFIRM_WINDOW_MS  1000U
 #define DAYNIGHT_FALSE_TRIG_CONFIRM_MIN_HITS      2U
 #define DAYNIGHT_FALSE_TRIG_CONFIRM_MAX_READS     4U
-#define DEBUG_ADC_VERBOSE  1   /* 调试：1=打印 ADC 采样值，完成后可改为 0 精简 */
-#define DEBUG_SYNC_VERBOSE 1   /* 调试：1=打印详细同步信息，0=只打印关键事件 */
-#define DEBUG_LED_VERBOSE  1   /* 调试：1=打印LED状态，0=不打印 */
+#define DEBUG_ADC_VERBOSE  LOG_ADC_VERBOSE_ENABLE   /* 兼容旧宏：ADC 详细日志 */
+#define DEBUG_SYNC_VERBOSE LOG_SYNC_RXTX_VERBOSE    /* 兼容旧宏：同步细节日志 */
+#define DEBUG_LED_VERBOSE  LOG_LED_VERBOSE_ENABLE   /* 兼容旧宏：LED 详细日志 */
 #define DEBUG_PERIODIC     0   /* 调试：1=启用定期打印（影响功耗），0=禁用 */
+
+/* 同步调度可观测性：每 N 个新周期打印一次“本周期是否开 RX” */
+#define SYNC_SCHEDULE_PRINT_EVERY_N 1U
 
 /* USER CODE END PD */
 
@@ -131,6 +214,11 @@ UART_HandleTypeDef huart1;
 static uint8_t RF_TX_Buf[RF_PACKET_SIZE]   = {0};
 static uint8_t RF_RX_Buf[RF_PACKET_SIZE]   = {0};
 
+typedef enum {
+  SYNC_STATE_ACQUIRE = 0,      /* 捕获态：连续接收 */
+  SYNC_STATE_LOCKED_SPARSE = 1 /* 锁定态：跨周期接收 */
+} SyncState_t;
+
 static uint32_t g_cycle = 0;
 static uint16_t g_phase_ms = 0;
 static uint32_t g_last_tick_ms = 0;
@@ -139,6 +227,25 @@ static uint32_t g_last_tx_cycle = (uint32_t)-1;
 static uint8_t  g_rf_mode = 0;
 static uint8_t  g_led_state = 0;
 static uint32_t g_led_on_tick = 0;
+
+static SyncState_t g_sync_state = SYNC_STATE_ACQUIRE;
+static uint8_t g_sync_good_count = 0;
+static uint8_t g_sync_bad_count = 0;
+static uint8_t g_sync_miss_count = 0;
+static uint8_t g_sync_sparse_counter = 0;
+static uint8_t g_sync_no_rx_keep_count = 0;
+static uint32_t g_sync_last_sched_cycle = (uint32_t)-1;
+static uint8_t g_sync_rx_open_this_cycle = 1;
+static uint32_t g_sync_last_collision_hold_cycle = (uint32_t)-1; /* 防止同一周期重复打印 COLLISION-HOLD */
+
+/* 强制省电巡检状态变量 */
+static uint8_t g_sync_forced_scan_mode = 0;   /* 0=正常状态机；1=强制巡检模式 */
+static uint8_t g_sync_probe_window_mode = 0;  /* 强制巡检子态：0=关RX窗口，1=开RX探测窗口 */
+static uint8_t g_sync_boot_acq_counter = 0;   /* 上电后 ACQUIRE 连续开RX计数 */
+static uint8_t g_sync_forced_sleep_counter = 0; /* 关RX窗口计数 */
+static uint8_t g_sync_forced_probe_counter = 0; /* 开RX探测计数 */
+static uint8_t g_sync_forced_probe_miss_rounds = 0; /* 探测失败轮次计数（轮=连续 SYNC_FORCED_PROBE_RX_CYCLES 周期） */
+static uint8_t g_sync_forced_probe_hit_in_round = 0; /* 本轮探测窗口内是否至少收到过1次有效包 */
 
 static uint8_t  g_is_night = 1;
 static uint32_t g_last_daynight_tick = 0;
@@ -245,7 +352,9 @@ int main(void)
 #endif
   MX_RTC_Init();
   /* USER CODE BEGIN 2 */
+#if LOG_FW_VERSION_ENABLE
   DebugPrint("[FW] " FW_VERSION "\r\n");
+#endif
 
   /* 欠压 Standby 唤醒后（或直接上电欠压）快速重入判定：
    *  - 在不启用升压/无线的前提下，尽快决定是否进入 Standby
@@ -254,12 +363,14 @@ int main(void)
   {
     uint32_t sb_flag = __HAL_PWR_GET_FLAG(PWR_FLAG_SB);
     uint32_t wuf1_flag = __HAL_PWR_GET_FLAG(PWR_FLAG_WUF1);
+#if LOG_BOOT_INFO_ENABLE
     if(sb_flag != 0U) {
       DebugPrint("[PWR] Standby flag set\r\n");
     }
     if(wuf1_flag != 0U) {
       DebugPrint("[PWR] Wake from WKUP1\r\n");
     }
+#endif
     /* 清掉唤醒标志，避免后续再次进入 Standby 时误判/立即唤醒 */
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WUF1);
     if(sb_flag != 0U) {
@@ -268,7 +379,9 @@ int main(void)
 
     uint32_t br_boot = Read_ADC1_Channel(ADC_CHANNEL_1);
     if(br_boot != 0xFFFFU && ((uint16_t)br_boot) <= BATT_ADC_UNDERVOLT_RAW) {
+#if LOG_BOOT_INFO_ENABLE
       DebugPrint("[UV] Boot undervolt -> enter STANDBY\r\n");
+#endif
       Undervolt_EnterStandby();
     }
   }
@@ -280,15 +393,22 @@ int main(void)
 
 
     /* RF 模块初始化 */
+#if LOG_BOOT_INFO_ENABLE
   DebugPrint("RF Init...\r\n");
+#endif
   RF_Link_Init();
+#if LOG_BOOT_INFO_ENABLE
   DebugPrint("RF Init OK\r\n");
+#endif
   g_rf_initialized = 1;
 
     /* 默认进入 RX 模式，监听频道 75 */
+#if LOG_BOOT_INFO_ENABLE
   DebugPrint("RF Config RX...\r\n");
+#endif
   RF_Link_ConfigRx(RF_RX_CHANNEL);
   g_rf_mode = 0;
+#if LOG_BOOT_INFO_ENABLE
   DebugPrint("RF Ready\r\n");
   
   /* 调试：确认TX固定时间 */
@@ -299,6 +419,7 @@ int main(void)
   DebugPrint("- ");
   DebugPrintDec(SYNC_TX_TIME_MS + 50U);
   DebugPrint("ms\r\n");
+#endif
 
 
 
@@ -312,6 +433,16 @@ int main(void)
 
   g_led_state = 0;
   g_led_on_tick = 0;
+
+  /* 同步状态机初始化：默认捕获态（连续接收） */
+  g_sync_state = SYNC_STATE_ACQUIRE;
+  g_sync_good_count = 0;
+  g_sync_bad_count = 0;
+  g_sync_miss_count = 0;
+  g_sync_sparse_counter = 0;
+  g_sync_no_rx_keep_count = 0;
+  g_sync_last_sched_cycle = (uint32_t)-1;
+  g_sync_rx_open_this_cycle = 1;
 
   g_is_night = 1;
   g_last_daynight_tick = HAL_GetTick();
@@ -369,7 +500,7 @@ int main(void)
         DebugPrint("(");
         
         /* 计算太阳能电压 */
-        uint32_t solar_mv = (solar_raw * 3300) / 4095;
+        uint32_t solar_mv = ADC_MV_FROM_RAW(solar_raw);
         DebugPrintDec((uint16_t)(solar_mv / 1000));
         DebugPrint(".");
         DebugPrintDec((uint16_t)((solar_mv % 1000) / 100));
@@ -380,7 +511,7 @@ int main(void)
         DebugPrint("(");
         
         /* 计算电池电压 */
-        uint32_t batt_mv = (batt_raw * 3300) / 4095;
+        uint32_t batt_mv = ADC_MV_FROM_RAW(batt_raw);
         DebugPrintDec((uint16_t)(batt_mv / 1000));
         DebugPrint(".");
         DebugPrintDec((uint16_t)((batt_mv % 1000) / 100));
@@ -422,6 +553,17 @@ int main(void)
           RF_Link_ConfigRx(RF_RX_CHANNEL);
           g_rf_mode = 0;
           g_rf_sleeping = 0;
+
+          /* 夜间重新开始时，重置同步省电状态机，先连续接收确保快速重同步 */
+          g_sync_state = SYNC_STATE_ACQUIRE;
+          g_sync_good_count = 0;
+          g_sync_bad_count = 0;
+          g_sync_miss_count = 0;
+          g_sync_sparse_counter = 0;
+          g_sync_no_rx_keep_count = 0;
+          g_sync_last_sched_cycle = (uint32_t)-1;
+          g_sync_rx_open_this_cycle = 1;
+          DebugPrint("[SYNC] Night enter -> ACQUIRE\r\n");
         } else {
           RF_Link_Sleep();
           g_rf_sleeping = 1;
@@ -1066,39 +1208,203 @@ static void Sync_AdjustFromPacket(uint16_t rx_phase_ms)
 }
 
 /**
- * @brief  同步主状态机：TX@450ms固定时间发送，450-900ms全程RX侦听
- *         相邻频道策略（TX@76, RX@75）避免自干扰和碰撞
+ * @brief  同步主状态机：固定TX + 锁定后跨周期接收（省电）
+ *         - ACQUIRE：连续接收，快速重同步
+ *         - LOCKED_SPARSE：每 N 周期开一次接收，失锁后回退 ACQUIRE
  */
 static void Sync_MainLoop(void)
 {
+  uint8_t rx_got_valid = 0;
+  int16_t phase_diff = 0;
+  uint16_t tx_time_ms = SYNC_TX_TIME_MS;
+
   /* 更新本地时间基准（增量式） */
   SyncTime_Update();
   /* 驱动 LED 指示灯（100ms 保持亮，然后熄灭） */
   SyncLamp_Update();
 
-  /* 固定 TX 时间段：所有节点同一时刻发送，确保相位对齐 */
-  if (g_cycle != g_last_tx_cycle && g_phase_ms >= SYNC_TX_TIME_MS && g_phase_ms < (SYNC_TX_TIME_MS + 50U)) {
+  /* 每个新周期只调度一次“本周期是否开启 RX” */
+  if(g_sync_last_sched_cycle != g_cycle) {
+    g_sync_last_sched_cycle = g_cycle;
+
+#if SYNC_FORCED_SCAN_ENABLE
+    /* 上电初期：先连续开 RX 若干周期，尽快捕获同步包 */
+    if((g_sync_forced_scan_mode == 0U) && (g_sync_state == SYNC_STATE_ACQUIRE) && (g_sync_boot_acq_counter < SYNC_BOOT_ACQ_CYCLES)) {
+      g_sync_boot_acq_counter++;
+      g_sync_rx_open_this_cycle = 1;
+      g_sync_sparse_counter = 0;
+    }
+    /* 若上电捕获窗口结束且仍未收到有效包，进入强制巡检 */
+    else if((g_sync_forced_scan_mode == 0U) && (g_sync_state == SYNC_STATE_ACQUIRE) && (g_sync_boot_acq_counter >= SYNC_BOOT_ACQ_CYCLES) && (g_sync_good_count == 0U)) {
+      g_sync_forced_scan_mode = 1U;
+      g_sync_probe_window_mode = 0U;
+      g_sync_forced_sleep_counter = 0U;
+      g_sync_forced_probe_counter = 0U;
+      g_sync_forced_probe_miss_rounds = 0U;
+      g_sync_forced_probe_hit_in_round = 0U;
+      g_sync_rx_open_this_cycle = 0;
+      g_sync_sparse_counter = 0;
+      g_sync_state = SYNC_STATE_LOCKED_SPARSE; /* 复用稀疏省电行为：不回 ACQ 常开RX */
+      g_sync_good_count = 0;
+      g_sync_bad_count = 0;
+      g_sync_no_rx_keep_count = 0;
+      g_sync_miss_count = 0;
+      DebugPrint("[SYNC] FORCED-SCAN enter (boot no-rx)\r\n");
+    }
+    /* 强制巡检主循环：SLEEP窗口与PROBE窗口交替 */
+    else if(g_sync_forced_scan_mode == 1U) {
+      if(g_sync_probe_window_mode == 0U) {
+        /* 关RX窗口 */
+        g_sync_rx_open_this_cycle = 0;
+        g_sync_sparse_counter = 0;
+        if(g_sync_forced_sleep_counter < 255U) g_sync_forced_sleep_counter++;
+        if(g_sync_forced_sleep_counter >= SYNC_FORCED_SLEEP_CYCLES) {
+          g_sync_probe_window_mode = 1U;
+          g_sync_forced_probe_counter = 0U;
+          g_sync_forced_probe_hit_in_round = 0U;
+          DebugPrint("[SYNC] FORCED-SCAN -> PROBE\r\n");
+        }
+      } else {
+        /* 开RX探测窗口 */
+        g_sync_rx_open_this_cycle = 1;
+        if(g_sync_forced_probe_counter < 255U) g_sync_forced_probe_counter++;
+        if(g_sync_forced_probe_counter >= SYNC_FORCED_PROBE_RX_CYCLES) {
+          g_sync_forced_probe_counter = 0U;
+          if(g_sync_forced_probe_hit_in_round == 0U) {
+            if(g_sync_forced_probe_miss_rounds < 255U) g_sync_forced_probe_miss_rounds++;
+            if(g_sync_forced_probe_miss_rounds >= SYNC_FORCED_PROBE_MISS_ROUNDS_TO_SLEEP) {
+              g_sync_probe_window_mode = 0U;
+              g_sync_forced_sleep_counter = 0U;
+              g_sync_forced_probe_miss_rounds = 0U;
+              DebugPrint("[SYNC] FORCED-SCAN probe miss x2 -> SLEEP\r\n");
+            } else {
+              DebugPrint("[SYNC] FORCED-SCAN probe miss round=1, keep PROBE\r\n");
+            }
+          } else {
+            g_sync_forced_probe_miss_rounds = 0U;
+          }
+          g_sync_forced_probe_hit_in_round = 0U;
+        }
+      }
+    }
+    else
+#endif
+    if(g_sync_state == SYNC_STATE_ACQUIRE) {
+      g_sync_rx_open_this_cycle = 1;
+      g_sync_sparse_counter = 0;
+    } else {
+      g_sync_sparse_counter++;
+      if(g_sync_sparse_counter >= SYNC_RX_EVERY_N_CYCLES) {
+        g_sync_sparse_counter = 0;
+        g_sync_rx_open_this_cycle = 1;
+      } else {
+        g_sync_rx_open_this_cycle = 0;
+      }
+    }
+
+#if LOG_SYNC_SCHEDULE_ENABLE
+    if((SYNC_SCHEDULE_PRINT_EVERY_N > 0U) && ((g_cycle % SYNC_SCHEDULE_PRINT_EVERY_N) == 0U)) {
+      DebugPrint("[SCH] cyc=");
+      DebugPrintDec((uint16_t)(g_cycle & 0xFFFFU));
+      DebugPrint(" st=");
+      if(g_sync_forced_scan_mode == 1U) {
+        DebugPrint("FSCAN");
+      } else if(g_sync_state == SYNC_STATE_ACQUIRE) {
+        DebugPrint("ACQ");
+      } else {
+        DebugPrint("LOCK");
+      }
+      DebugPrint(" N=");
+      DebugPrintDec(SYNC_RX_EVERY_N_CYCLES);
+      DebugPrint(" sc=");
+      DebugPrintDec(g_sync_sparse_counter);
+      DebugPrint(" rx=");
+      if(g_sync_rx_open_this_cycle) {
+        DebugPrint("ON");
+      } else {
+        DebugPrint("OFF");
+      }
+      DebugPrint("\r\n");
+    }
+#endif
+
+#if LOG_SYNC_LOCK_DIAG_ENABLE
+    if((SYNC_SCHEDULE_PRINT_EVERY_N > 0U) && ((g_cycle % SYNC_SCHEDULE_PRINT_EVERY_N) == 0U)) {
+      uint8_t lock_need_diag = SYNC_LOCK_NEED_GOOD_COUNT;
+#if SYNC_FAST_LOCK_ENABLE
+      lock_need_diag = SYNC_FAST_LOCK_GOOD_COUNT;
+#endif
+      DebugPrint("[DIAG] good=");
+      DebugPrintDec(g_sync_good_count);
+      DebugPrint("/");
+      DebugPrintDec(lock_need_diag);
+      DebugPrint(" bad=");
+      DebugPrintDec(g_sync_bad_count);
+      DebugPrint(" miss=");
+      DebugPrintDec(g_sync_miss_count);
+      DebugPrint(" no_rx=");
+      DebugPrintDec(g_sync_no_rx_keep_count);
+#if SYNC_FORCED_SCAN_ENABLE
+      DebugPrint(" fs=");
+      DebugPrintDec(g_sync_forced_scan_mode);
+      DebugPrint(" pw=");
+      DebugPrintDec(g_sync_probe_window_mode);
+      DebugPrint(" sl=");
+      DebugPrintDec(g_sync_forced_sleep_counter);
+      DebugPrint(" pb=");
+      DebugPrintDec(g_sync_forced_probe_counter);
+      DebugPrint(" pm=");
+      DebugPrintDec(g_sync_forced_probe_miss_rounds);
+#endif
+      DebugPrint(" st=");
+      if(g_sync_forced_scan_mode == 1U) {
+        DebugPrint("FSCAN");
+      } else if(g_sync_state == SYNC_STATE_ACQUIRE) {
+        DebugPrint("ACQ");
+      } else {
+        DebugPrint("LOCK");
+      }
+      DebugPrint("\r\n");
+    }
+#endif
+  }
+
+  /* TX 时间段：默认固定发送；可按宏开启偏移探测（用于打破长期对撞） */
+#if SYNC_TX_DITHER_ENABLE
+  {
+    uint8_t use_dither = 1U;
+#if SYNC_TX_DITHER_PROBE_ONLY
+    use_dither = (g_sync_forced_scan_mode == 1U && g_sync_probe_window_mode == 1U) ? 1U : 0U;
+#endif
+    if(use_dither) {
+      tx_time_ms = (uint16_t)(SYNC_TX_TIME_MS + SYNC_TX_DITHER_OFFSET_MS);
+      if(tx_time_ms >= SYNC_CYCLE_MS) tx_time_ms -= SYNC_CYCLE_MS;
+    }
+  }
+#endif
+
+  if (g_cycle != g_last_tx_cycle && g_phase_ms >= tx_time_ms && g_phase_ms < (tx_time_ms + 50U)) {
     /* 切换到 TX 模式，频道 76 */
     if (g_rf_mode != 1) {
       RF_Link_ConfigTx(RF_TX_CHANNEL);
       g_rf_mode = 1;
     }
 
-        /* 构造并发送同步包 */
+    /* 构造并发送同步包 */
     BuildSyncPacket(RF_TX_Buf);
-        if (RF_Link_Send(RF_TX_Buf, SYNC_PKT_SIZE) == 0) {
+    if (RF_Link_Send(RF_TX_Buf, SYNC_PKT_SIZE) == 0) {
 #if DEBUG_SYNC_VERBOSE
       DebugPrint("[TX] phase=");
       DebugPrintDec(g_phase_ms);
       DebugPrint("ms, target=");
-      DebugPrintDec(SYNC_TX_TIME_MS);
+      DebugPrintDec(tx_time_ms);
       DebugPrint("ms, diff=");
-      if(g_phase_ms >= SYNC_TX_TIME_MS) {
+      if(g_phase_ms >= tx_time_ms) {
         DebugPrint("+");
-        DebugPrintDec(g_phase_ms - SYNC_TX_TIME_MS);
+        DebugPrintDec(g_phase_ms - tx_time_ms);
       } else {
         DebugPrint("-");
-        DebugPrintDec(SYNC_TX_TIME_MS - g_phase_ms);
+        DebugPrintDec(tx_time_ms - g_phase_ms);
       }
       DebugPrint("ms\r\n");
 #else
@@ -1107,37 +1413,38 @@ static void Sync_MainLoop(void)
     }
     g_last_tx_cycle = g_cycle;
 
-            /* 注释：TX事件不再点亮LED，只做调试输出 */
-    /* HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3); */
-    /* HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET); */
-    /* g_led_on_tick = HAL_GetTick(); */
-    /* g_led_state = 1; */
-    /* LED调试：TX事件（仅调试，不影响LED） */
-    DebugPrint("[TX]\r\n");
+    /* 发送后按策略切回 RX 或进入 RF 睡眠（锁定省电态跨周期接收） */
+    if(g_sync_rx_open_this_cycle) {
+      RF_Link_ConfigRx(RF_RX_CHANNEL);
+      g_rf_mode = 0;
+    } else {
+      RF_Link_Sleep();
+      g_rf_mode = 2;
+    }
+  }
 
-    /* 发送完立刻切回 RX 模式，频道 75，全程侦听 */
+  /* 若本周期计划接收但当前未在 RX，则补切到 RX（兼容异常恢复场景） */
+  if(g_sync_rx_open_this_cycle && g_rf_mode != 0) {
     RF_Link_ConfigRx(RF_RX_CHANNEL);
     g_rf_mode = 0;
   }
 
-  /* RX 模式下轮询接收 - 全周期执行（不睡眠，连续侦听） */
-  if (g_rf_mode == 0) {
+  /* RX 模式下轮询接收 */
+  if (g_sync_rx_open_this_cycle && g_rf_mode == 0) {
     uint8_t rx_len = 0;
     if (RF_Link_PollReceive(RF_RX_Buf, &rx_len) == 1) {
       uint16_t rx_phase_ms = ParseSyncPacket(RF_RX_Buf);
+      if (rx_phase_ms < SYNC_CYCLE_MS) {
+        /* 计算相位差异（规范化到 [-T/2, +T/2]） */
+        phase_diff = (int16_t)rx_phase_ms - (int16_t)g_phase_ms;
+        if(phase_diff > (int16_t)(SYNC_CYCLE_MS / 2)) phase_diff -= SYNC_CYCLE_MS;
+        if(phase_diff < -(int16_t)(SYNC_CYCLE_MS / 2)) phase_diff += SYNC_CYCLE_MS;
 
-                  if (rx_phase_ms < SYNC_CYCLE_MS) {
 #if DEBUG_SYNC_VERBOSE
         DebugPrint("RX: ph=");
         DebugPrintDec(rx_phase_ms);
         DebugPrint(" local=");
         DebugPrintDec(g_phase_ms);
-        
-        /* 计算相位差异 */
-        int16_t phase_diff = (int16_t)rx_phase_ms - (int16_t)g_phase_ms;
-        if(phase_diff > (int16_t)(SYNC_CYCLE_MS / 2)) phase_diff -= SYNC_CYCLE_MS;
-        if(phase_diff < -(int16_t)(SYNC_CYCLE_MS / 2)) phase_diff += SYNC_CYCLE_MS;
-        
         DebugPrint(" diff=");
         if(phase_diff >= 0) {
           DebugPrint("+");
@@ -1146,18 +1453,122 @@ static void Sync_MainLoop(void)
           DebugPrint("-");
           DebugPrintDec((uint16_t)(-phase_diff));
         }
-        
-        DebugPrint("[RX]");
-        
-        DebugPrint(" adj=");
-        DebugPrintDec(g_phase_ms);
         DebugPrint("\r\n");
 #else
         DebugPrint("RX\r\n");
 #endif
-        
+
         /* 相位调整 */
         Sync_AdjustFromPacket(rx_phase_ms);
+        rx_got_valid = 1;
+#if SYNC_FORCED_SCAN_ENABLE
+        if(g_sync_forced_scan_mode == 1U && g_sync_probe_window_mode == 1U) {
+          g_sync_forced_probe_hit_in_round = 1U;
+        }
+#endif
+      }
+    }
+  }
+
+  /* 锁定质量评估与状态迁移 */
+  if(g_sync_rx_open_this_cycle) {
+    if(rx_got_valid) {
+      uint16_t abs_err = (phase_diff >= 0) ? (uint16_t)phase_diff : (uint16_t)(-phase_diff);
+      g_sync_miss_count = 0;
+      g_sync_no_rx_keep_count = 0;
+
+      if(abs_err <= SYNC_LOCK_ERR_TH_MS) {
+        if(g_sync_good_count < 255U) g_sync_good_count++;
+        g_sync_bad_count = 0;
+      } else if(abs_err >= SYNC_UNLOCK_ERR_TH_MS) {
+        if(g_sync_bad_count < 255U) g_sync_bad_count++;
+        g_sync_good_count = 0;
+      } else {
+        /* 中间带：不计好也不计坏，避免抖动 */
+        g_sync_good_count = 0;
+        g_sync_bad_count = 0;
+      }
+
+      {
+        uint8_t lock_need = SYNC_LOCK_NEED_GOOD_COUNT;
+#if SYNC_FAST_LOCK_ENABLE
+        lock_need = SYNC_FAST_LOCK_GOOD_COUNT;
+#endif
+        if((g_sync_state == SYNC_STATE_ACQUIRE || g_sync_forced_scan_mode == 1U) && g_sync_good_count >= lock_need) {
+          g_sync_forced_scan_mode = 0U;
+          g_sync_probe_window_mode = 0U;
+          g_sync_forced_sleep_counter = 0U;
+          g_sync_forced_probe_counter = 0U;
+          g_sync_forced_probe_miss_rounds = 0U;
+          g_sync_forced_probe_hit_in_round = 0U;
+          g_sync_state = SYNC_STATE_LOCKED_SPARSE;
+          g_sync_good_count = 0;
+          g_sync_bad_count = 0;
+          g_sync_sparse_counter = 0;
+          DebugPrint("[SYNC] LOCKED -> SPARSE RX\r\n");
+        }
+      }
+
+#if SYNC_FORCED_SCAN_ENABLE
+      /* 日志/状态优化：FSCAN 期间不执行 bad-phase 退锁，避免探测阶段状态抖动 */
+      if((g_sync_forced_scan_mode == 0U) && g_sync_state == SYNC_STATE_LOCKED_SPARSE && g_sync_bad_count >= SYNC_UNLOCK_NEED_BAD_COUNT) {
+#else
+      if(g_sync_state == SYNC_STATE_LOCKED_SPARSE && g_sync_bad_count >= SYNC_UNLOCK_NEED_BAD_COUNT) {
+#endif
+        g_sync_state = SYNC_STATE_ACQUIRE;
+        g_sync_good_count = 0;
+        g_sync_bad_count = 0;
+        g_sync_miss_count = 0;
+        g_sync_no_rx_keep_count = 0;
+        g_sync_rx_open_this_cycle = 1;
+        RF_Link_ConfigRx(RF_RX_CHANNEL);
+        g_rf_mode = 0;
+        DebugPrint("[SYNC] UNLOCK (bad phase) -> ACQUIRE\r\n");
+      }
+    } else {
+      if(g_sync_state == SYNC_STATE_LOCKED_SPARSE) {
+        if(g_sync_no_rx_keep_count < 255U) g_sync_no_rx_keep_count++;
+
+        if(g_sync_no_rx_keep_count <= SYNC_LOCK_ASSUME_NO_RX_CYCLES) {
+          /* 对撞无包容忍窗口：保持锁定，不立即回退 */
+          g_sync_miss_count = 0;
+        } else {
+          if(g_sync_miss_count < 255U) g_sync_miss_count++;
+          if(g_sync_miss_count >= SYNC_UNLOCK_MISS_COUNT) {
+#if SYNC_COLLISION_HOLD_ENABLE
+            if(g_sync_no_rx_keep_count >= SYNC_COLLISION_HOLD_MIN_NO_RX) {
+              /* 对撞保持：判定为“高同步但长期对撞无包”，继续留在稀疏接收态 */
+              g_sync_miss_count = 0;
+#if LOG_SYNC_COLLISION_HOLD_ENABLE
+              if(g_sync_last_collision_hold_cycle != g_cycle) {
+                g_sync_last_collision_hold_cycle = g_cycle;
+                DebugPrint("[SYNC] COLLISION-HOLD keep SPARSE RX\r\n");
+              }
+#endif
+            } else {
+              g_sync_state = SYNC_STATE_ACQUIRE;
+              g_sync_good_count = 0;
+              g_sync_bad_count = 0;
+              g_sync_miss_count = 0;
+              g_sync_no_rx_keep_count = 0;
+              g_sync_rx_open_this_cycle = 1;
+              RF_Link_ConfigRx(RF_RX_CHANNEL);
+              g_rf_mode = 0;
+              DebugPrint("[SYNC] UNLOCK (miss timeout) -> ACQUIRE\r\n");
+            }
+#else
+            g_sync_state = SYNC_STATE_ACQUIRE;
+            g_sync_good_count = 0;
+            g_sync_bad_count = 0;
+            g_sync_miss_count = 0;
+            g_sync_no_rx_keep_count = 0;
+            g_sync_rx_open_this_cycle = 1;
+            RF_Link_ConfigRx(RF_RX_CHANNEL);
+            g_rf_mode = 0;
+            DebugPrint("[SYNC] UNLOCK (miss timeout) -> ACQUIRE\r\n");
+#endif
+          }
+        }
       }
     }
   }
@@ -1715,7 +2126,7 @@ static void DayNight_Update(void)
         DebugPrintDec((uint16_t)solar_raw);
         DebugPrint("(");
         
-        uint32_t solar_mv = (solar_raw * 3300) / 4095;
+        uint32_t solar_mv = ADC_MV_FROM_RAW(solar_raw);
         DebugPrintDec((uint16_t)(solar_mv / 1000));
         DebugPrint(".");
         DebugPrintDec((uint16_t)((solar_mv % 1000) / 100));
@@ -1725,7 +2136,7 @@ static void DayNight_Update(void)
         DebugPrintDec((uint16_t)batt_raw);
         DebugPrint("(");
         
-        uint32_t batt_mv = (batt_raw * 3300) / 4095;
+        uint32_t batt_mv = ADC_MV_FROM_RAW(batt_raw);
         DebugPrintDec((uint16_t)(batt_mv / 1000));
         DebugPrint(".");
         DebugPrintDec((uint16_t)((batt_mv % 1000) / 100));
@@ -1747,7 +2158,7 @@ static void DayNight_Update(void)
       DebugPrintDec(adc_val);
       DebugPrint("(");
       
-      uint32_t voltage_mv = (adc_val * 3300) / 4095;
+      uint32_t voltage_mv = ADC_MV_FROM_RAW(adc_val);
       DebugPrintDec((uint16_t)(voltage_mv / 1000));
       DebugPrint(".");
       DebugPrintDec((uint16_t)((voltage_mv % 1000) / 100));
@@ -1762,7 +2173,7 @@ static void DayNight_Update(void)
           DebugPrint(" batt=");
           DebugPrintDec((uint16_t)batt_raw);
           DebugPrint("(");
-          uint32_t batt_mv = (batt_raw * 3300) / 4095;
+          uint32_t batt_mv = ADC_MV_FROM_RAW(batt_raw);
           DebugPrintDec((uint16_t)(batt_mv / 1000));
           DebugPrint(".");
           DebugPrintDec((uint16_t)((batt_mv % 1000) / 100));
@@ -1817,7 +2228,7 @@ static void Charge_Update(void)
       DebugPrint("(");
       
       /* 计算电池电压值（假设3.3V参考电压，12位ADC） */
-      uint32_t batt_voltage_mv = (adc_val * 3300) / 4095;
+      uint32_t batt_voltage_mv = ADC_MV_FROM_RAW(adc_val);
       DebugPrintDec((uint16_t)(batt_voltage_mv / 1000));  /* 整数部分 */
       DebugPrint(".");
       DebugPrintDec((uint16_t)((batt_voltage_mv % 1000) / 100));  /* 小数第一位 */
@@ -1835,7 +2246,7 @@ static void Charge_Update(void)
     DebugPrint("(");
     
     /* 计算电池电压值 */
-    uint32_t batt_voltage_mv = (adc_val * 3300) / 4095;
+    uint32_t batt_voltage_mv = ADC_MV_FROM_RAW(adc_val);
     DebugPrintDec((uint16_t)(batt_voltage_mv / 1000));
     DebugPrint(".");
     DebugPrintDec((uint16_t)((batt_voltage_mv % 1000) / 100));
@@ -1852,7 +2263,7 @@ static void Charge_Update(void)
     DebugPrint("(");
     
     /* 计算电池电压值 */
-    uint32_t batt_voltage_mv = (adc_val * 3300) / 4095;
+    uint32_t batt_voltage_mv = ADC_MV_FROM_RAW(adc_val);
     DebugPrintDec((uint16_t)(batt_voltage_mv / 1000));
     DebugPrint(".");
     DebugPrintDec((uint16_t)((batt_voltage_mv % 1000) / 100));
