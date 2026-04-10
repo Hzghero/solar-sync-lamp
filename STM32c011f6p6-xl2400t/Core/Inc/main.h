@@ -41,7 +41,7 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-#define FW_VERSION "v2.15.3-AdcRefSelect3V0or3V3"
+#define FW_VERSION "v2.16.3-ObsTune"
 
 /* USER CODE END EC */
 

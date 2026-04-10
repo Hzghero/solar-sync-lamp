@@ -81,7 +81,7 @@
 #define SYNC_FORCED_SCAN_ENABLE            1U
 #define SYNC_BOOT_ACQ_CYCLES               5U
 #define SYNC_FORCED_SLEEP_CYCLES          18U   /* 温和版：关RX窗口缩短，减少“长时间错开”体感 */
-#define SYNC_FORCED_PROBE_RX_CYCLES        4U   /* 温和版：单次探测窗口拉长，提升捕获概率 */
+#define SYNC_FORCED_PROBE_RX_CYCLES        5U   /* 探测窗口连续开RX周期数（增强命中概率） */
 #define SYNC_FORCED_PROBE_MISS_ROUNDS_TO_SLEEP 2U /* 连续探测失败多少轮后才回到关RX窗口 */
 
 /* TX 偏移探测开关（用于打破长期对撞）
@@ -90,8 +90,29 @@
  * 若只想在“强制巡检的 PROBE 窗口”使用偏移，可把 SYNC_TX_DITHER_PROBE_ONLY 设为 1。
  */
 #define SYNC_TX_DITHER_ENABLE              1U
-#define SYNC_TX_DITHER_OFFSET_MS          20U   /* 用户要求：偏移达到 20ms */
+#define SYNC_TX_DITHER_OFFSET_MS          10U   /* 兼容旧逻辑的基础偏移 */
 #define SYNC_TX_DITHER_PROBE_ONLY          1U
+
+/* 探测窗口递进偏移：用于打破“固定相位互撞”的死角
+ * 偏移序列：20/25/30/35/40ms，命中有效包后回到 20ms 起点。
+ */
+#define SYNC_TX_DITHER_STEP_MS             2U
+#define SYNC_TX_DITHER_MAX_MS             18U
+
+/* 分层恢复参数（先协议自救，后底层恢复）
+ * 1) LOCK 长时间无包 -> 强制回 ACQUIRE 连续开 RX 一段时间
+ * 2) 若多轮自救仍失败且存在底层异常证据 -> 触发 RF_Link_Init()
+ */
+#define SYNC_LOCK_NO_RX_FORCE_ACQ_TH      24U   /* LOCK 连续无包阈值（按“计划接收周期”计） */
+#define SYNC_FORCE_ACQ_RX_CYCLES           8U   /* 强制 ACQUIRE 连续开 RX 周期数 */
+#define SYNC_RECOVER_FAIL_ROUNDS_TH        2U   /* 至少完成多少轮协议自救仍失败 */
+#define SYNC_RECOVER_NO_VALID_MS        60000U  /* 全局无有效包时长阈值（ms） */
+#define SYNC_RECOVER_COOLDOWN_MS       120000U  /* RF 恢复冷却时间（ms） */
+#define SYNC_RECOVER_MAX_PER_HOUR         3U    /* 每小时最多触发 RF 恢复次数 */
+#define SYNC_RECOVER_HOUR_MS         3600000UL
+
+/* 底层异常证据阈值（任一命中即可作为“异常证据”） */
+#define RF_ERR_STREAK_TH                   3U
 
 /* ADC 参考电压一键切换：
  * 0 = 3.3V（默认）
@@ -156,7 +177,11 @@
 #define LOG_SYNC_SCHEDULE_ENABLE    1   /* 每周期调度日志：[SCH]，用于观察 RX ON/OFF */
 #define LOG_SYNC_LOCK_DIAG_ENABLE   1   /* 锁定诊断日志：[DIAG] good/bad/miss/no_rx/state */
 #define LOG_SYNC_COLLISION_HOLD_ENABLE 0 /* 对撞保持事件日志：[SYNC] COLLISION-HOLD...（测流建议关） */
-#define LOG_SYNC_RXTX_VERBOSE       1  /* 同步细节日志：[TX]/RX/[ADJ]/[CYCLE]（较多，测流时建议关） */
+#define LOG_SYNC_RXTX_VERBOSE       1   /* 同步细节日志：[TX]/RX/[ADJ]/[CYCLE]（较多，测流时建议关） */
+#define LOG_SYNC_OBSERVE_ENABLE     1   /* 观测增强总开关：1=打印观测日志，0=关闭新增观测日志（不影响功能） */
+#define LOG_SYNC_OBS_DITHER_ENABLE  1   /* 递进偏移观测日志：[OBS][DITHER]（建议联调开、量产可关） */
+#define LOG_SYNC_OBS_RESCUE_ENABLE  1   /* 协议自救观测日志：[OBS][RESCUE] 触发判据与计数 */
+#define LOG_SYNC_OBS_RECOVER_ENABLE 1   /* RF恢复观测日志：[OBS][RECOVER] 触发判据与每小时次数 */
 #define LOG_LED_VERBOSE_ENABLE      0   /* LED 详细日志 */
 #define LOG_ADC_VERBOSE_ENABLE      0   /* ADC/充电/欠压详细日志（较多，测流时建议关） */
 
@@ -246,6 +271,21 @@ static uint8_t g_sync_forced_sleep_counter = 0; /* 关RX窗口计数 */
 static uint8_t g_sync_forced_probe_counter = 0; /* 开RX探测计数 */
 static uint8_t g_sync_forced_probe_miss_rounds = 0; /* 探测失败轮次计数（轮=连续 SYNC_FORCED_PROBE_RX_CYCLES 周期） */
 static uint8_t g_sync_forced_probe_hit_in_round = 0; /* 本轮探测窗口内是否至少收到过1次有效包 */
+static uint8_t g_sync_dither_idx = 0;                /* 递进偏移索引：0..4 => 20/25/30/35/40ms */
+static uint8_t g_sync_force_acq_cycles_left = 0;     /* 协议自救：强制 ACQUIRE 连续 RX 剩余周期 */
+static uint8_t g_sync_recover_fail_rounds = 0;       /* 协议自救失败轮次计数 */
+static uint32_t g_sync_rescue_count_total = 0;       /* 观测计数：协议自救总触发次数（仅统计） */
+
+/* RF 底层健康统计：仅用于“是否需要底层恢复”的判据，不直接影响正常收发流程 */
+static uint32_t g_last_valid_rx_tick = 0;            /* 最近一次收到有效同步包的时间戳 */
+static uint8_t g_rf_cfg_rx_fail_streak = 0;
+static uint8_t g_rf_cfg_tx_fail_streak = 0;
+static uint8_t g_rf_send_fail_streak = 0;
+static uint8_t g_rf_poll_err_streak = 0;             /* 预留：当前接口无显式错误码，先保持0 */
+static uint32_t g_rf_recover_count_total = 0;
+static uint32_t g_rf_recover_hour_window_start = 0;
+static uint8_t g_rf_recover_count_this_hour = 0;
+static uint32_t g_rf_recover_cooldown_until = 0;
 
 static uint8_t  g_is_night = 1;
 static uint32_t g_last_daynight_tick = 0;
@@ -304,6 +344,7 @@ static uint32_t Read_ADC1_Channel(uint32_t channel);  /* 指定通道读 ADC1 �
 static void Test_ADC_Channels(void);                   /* ADC通道切换测试函数 */
 static uint8_t Read_ADC1_DualChannel(uint32_t* solar_raw, uint32_t* batt_raw);  /* 扫描模式读取双通道 */
 static uint8_t DayNight_ConfirmTransition(uint8_t toNight);
+static void RF_Recovery_Check(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -443,6 +484,20 @@ int main(void)
   g_sync_no_rx_keep_count = 0;
   g_sync_last_sched_cycle = (uint32_t)-1;
   g_sync_rx_open_this_cycle = 1;
+  g_sync_dither_idx = 0;
+  g_sync_force_acq_cycles_left = 0;
+  g_sync_recover_fail_rounds = 0;
+  g_sync_rescue_count_total = 0;
+
+  g_last_valid_rx_tick = HAL_GetTick();
+  g_rf_cfg_rx_fail_streak = 0;
+  g_rf_cfg_tx_fail_streak = 0;
+  g_rf_send_fail_streak = 0;
+  g_rf_poll_err_streak = 0;
+  g_rf_recover_count_total = 0;
+  g_rf_recover_hour_window_start = HAL_GetTick();
+  g_rf_recover_count_this_hour = 0;
+  g_rf_recover_cooldown_until = 0;
 
   g_is_night = 1;
   g_last_daynight_tick = HAL_GetTick();
@@ -563,6 +618,10 @@ int main(void)
           g_sync_no_rx_keep_count = 0;
           g_sync_last_sched_cycle = (uint32_t)-1;
           g_sync_rx_open_this_cycle = 1;
+          g_sync_dither_idx = 0;
+          g_sync_force_acq_cycles_left = 0;
+          g_sync_recover_fail_rounds = 0;
+          g_last_valid_rx_tick = HAL_GetTick();
           DebugPrint("[SYNC] Night enter -> ACQUIRE\r\n");
         } else {
           RF_Link_Sleep();
@@ -575,6 +634,7 @@ int main(void)
     if(g_is_night) {
       /* 夜间：同步+闪灯 */
       Sync_MainLoop();
+      RF_Recovery_Check();
       SyncLamp_Update();
       HAL_Delay(1);
     } else {
@@ -1272,6 +1332,25 @@ static void Sync_MainLoop(void)
           g_sync_forced_probe_counter = 0U;
           if(g_sync_forced_probe_hit_in_round == 0U) {
             if(g_sync_forced_probe_miss_rounds < 255U) g_sync_forced_probe_miss_rounds++;
+            if(g_sync_dither_idx < 255U) g_sync_dither_idx++;
+            if((uint16_t)(SYNC_TX_DITHER_OFFSET_MS + ((uint16_t)g_sync_dither_idx * SYNC_TX_DITHER_STEP_MS)) > SYNC_TX_DITHER_MAX_MS) {
+              g_sync_dither_idx = 0U;
+            }
+#if LOG_SYNC_OBSERVE_ENABLE && LOG_SYNC_OBS_DITHER_ENABLE
+            {
+              uint16_t obs_dither_ms = (uint16_t)(SYNC_TX_DITHER_OFFSET_MS + ((uint16_t)g_sync_dither_idx * SYNC_TX_DITHER_STEP_MS));
+              if(obs_dither_ms > SYNC_TX_DITHER_MAX_MS) {
+                obs_dither_ms = SYNC_TX_DITHER_MAX_MS;
+              }
+              DebugPrint("[OBS][DITHER] idx=");
+              DebugPrintDec(g_sync_dither_idx);
+              DebugPrint(" ms=");
+              DebugPrintDec(obs_dither_ms);
+              DebugPrint(" probe_miss_rounds=");
+              DebugPrintDec(g_sync_forced_probe_miss_rounds);
+              DebugPrint("\r\n");
+            }
+#endif
             if(g_sync_forced_probe_miss_rounds >= SYNC_FORCED_PROBE_MISS_ROUNDS_TO_SLEEP) {
               g_sync_probe_window_mode = 0U;
               g_sync_forced_sleep_counter = 0U;
@@ -1289,7 +1368,44 @@ static void Sync_MainLoop(void)
     }
     else
 #endif
-    if(g_sync_state == SYNC_STATE_ACQUIRE) {
+    if((g_sync_force_acq_cycles_left == 0U) &&
+       (g_sync_forced_scan_mode == 0U) &&
+       (g_sync_state == SYNC_STATE_LOCKED_SPARSE) &&
+       (g_sync_no_rx_keep_count >= SYNC_LOCK_NO_RX_FORCE_ACQ_TH)) {
+      g_sync_state = SYNC_STATE_ACQUIRE;
+      g_sync_force_acq_cycles_left = SYNC_FORCE_ACQ_RX_CYCLES;
+      g_sync_good_count = 0U;
+      g_sync_bad_count = 0U;
+      g_sync_miss_count = 0U;
+      g_sync_sparse_counter = 0U;
+      g_sync_rx_open_this_cycle = 1U;
+      if(g_sync_rescue_count_total < 0xFFFFFFFFUL) g_sync_rescue_count_total++;
+      DebugPrint("[RESCUE] LOCK no-rx -> FORCE ACQ\r\n");
+#if LOG_SYNC_OBSERVE_ENABLE && LOG_SYNC_OBS_RESCUE_ENABLE
+      DebugPrint("[OBS][RESCUE] no_rx=");
+      DebugPrintDec(g_sync_no_rx_keep_count);
+      DebugPrint(" th=");
+      DebugPrintDec(SYNC_LOCK_NO_RX_FORCE_ACQ_TH);
+      DebugPrint(" force_rx=");
+      DebugPrintDec(SYNC_FORCE_ACQ_RX_CYCLES);
+      DebugPrint(" rounds=");
+      DebugPrintDec(g_sync_recover_fail_rounds);
+      DebugPrint(" cnt=");
+      DebugPrintDec((uint16_t)(g_sync_rescue_count_total & 0xFFFFU));
+      DebugPrint("\r\n");
+#endif
+    }
+
+    if(g_sync_force_acq_cycles_left > 0U) {
+      g_sync_rx_open_this_cycle = 1;
+      g_sync_sparse_counter = 0;
+      g_sync_force_acq_cycles_left--;
+      if(g_sync_force_acq_cycles_left == 0U) {
+        if(g_sync_recover_fail_rounds < 255U) {
+          g_sync_recover_fail_rounds++;
+        }
+      }
+    } else if(g_sync_state == SYNC_STATE_ACQUIRE) {
       g_sync_rx_open_this_cycle = 1;
       g_sync_sparse_counter = 0;
     } else {
@@ -1373,11 +1489,16 @@ static void Sync_MainLoop(void)
 #if SYNC_TX_DITHER_ENABLE
   {
     uint8_t use_dither = 1U;
+    uint16_t dither_ms = SYNC_TX_DITHER_OFFSET_MS;
 #if SYNC_TX_DITHER_PROBE_ONLY
     use_dither = (g_sync_forced_scan_mode == 1U && g_sync_probe_window_mode == 1U) ? 1U : 0U;
 #endif
     if(use_dither) {
-      tx_time_ms = (uint16_t)(SYNC_TX_TIME_MS + SYNC_TX_DITHER_OFFSET_MS);
+      dither_ms = (uint16_t)(SYNC_TX_DITHER_OFFSET_MS + ((uint16_t)g_sync_dither_idx * SYNC_TX_DITHER_STEP_MS));
+      if(dither_ms > SYNC_TX_DITHER_MAX_MS) {
+        dither_ms = SYNC_TX_DITHER_MAX_MS;
+      }
+      tx_time_ms = (uint16_t)(SYNC_TX_TIME_MS + dither_ms);
       if(tx_time_ms >= SYNC_CYCLE_MS) tx_time_ms -= SYNC_CYCLE_MS;
     }
   }
@@ -1388,11 +1509,13 @@ static void Sync_MainLoop(void)
     if (g_rf_mode != 1) {
       RF_Link_ConfigTx(RF_TX_CHANNEL);
       g_rf_mode = 1;
+      g_rf_cfg_tx_fail_streak = 0U;
     }
 
     /* 构造并发送同步包 */
     BuildSyncPacket(RF_TX_Buf);
     if (RF_Link_Send(RF_TX_Buf, SYNC_PKT_SIZE) == 0) {
+      g_rf_send_fail_streak = 0U;
 #if DEBUG_SYNC_VERBOSE
       DebugPrint("[TX] phase=");
       DebugPrintDec(g_phase_ms);
@@ -1410,6 +1533,8 @@ static void Sync_MainLoop(void)
 #else
       DebugPrint("[TX]\r\n");
 #endif
+    } else {
+      if(g_rf_send_fail_streak < 255U) g_rf_send_fail_streak++;
     }
     g_last_tx_cycle = g_cycle;
 
@@ -1417,6 +1542,7 @@ static void Sync_MainLoop(void)
     if(g_sync_rx_open_this_cycle) {
       RF_Link_ConfigRx(RF_RX_CHANNEL);
       g_rf_mode = 0;
+      g_rf_cfg_rx_fail_streak = 0U;
     } else {
       RF_Link_Sleep();
       g_rf_mode = 2;
@@ -1427,6 +1553,7 @@ static void Sync_MainLoop(void)
   if(g_sync_rx_open_this_cycle && g_rf_mode != 0) {
     RF_Link_ConfigRx(RF_RX_CHANNEL);
     g_rf_mode = 0;
+    g_rf_cfg_rx_fail_streak = 0U;
   }
 
   /* RX 模式下轮询接收 */
@@ -1476,6 +1603,10 @@ static void Sync_MainLoop(void)
       uint16_t abs_err = (phase_diff >= 0) ? (uint16_t)phase_diff : (uint16_t)(-phase_diff);
       g_sync_miss_count = 0;
       g_sync_no_rx_keep_count = 0;
+      g_last_valid_rx_tick = HAL_GetTick();
+      g_sync_recover_fail_rounds = 0U;
+      g_sync_dither_idx = 0U;
+      g_rf_poll_err_streak = 0U;
 
       if(abs_err <= SYNC_LOCK_ERR_TH_MS) {
         if(g_sync_good_count < 255U) g_sync_good_count++;
@@ -1572,6 +1703,86 @@ static void Sync_MainLoop(void)
       }
     }
   }
+}
+
+/* 分层恢复：先协议自救，再底层恢复
+ * 条件：长期无有效包 + 协议自救多轮失败 + 有底层异常证据 + 冷却窗允许
+ */
+static void RF_Recovery_Check(void)
+{
+  uint32_t now = HAL_GetTick();
+  uint32_t obs_no_valid_ms = now - g_last_valid_rx_tick; /* 观测：触发前的“无有效包时长” */
+  uint8_t obs_recover_rounds = g_sync_recover_fail_rounds; /* 观测：触发前协议自救失败轮次 */
+
+  if((now - g_rf_recover_hour_window_start) >= SYNC_RECOVER_HOUR_MS) {
+    g_rf_recover_hour_window_start = now;
+    g_rf_recover_count_this_hour = 0U;
+  }
+
+  if((now - g_last_valid_rx_tick) < SYNC_RECOVER_NO_VALID_MS) {
+    return;
+  }
+  if(g_sync_recover_fail_rounds < SYNC_RECOVER_FAIL_ROUNDS_TH) {
+    return;
+  }
+  if(now < g_rf_recover_cooldown_until) {
+    return;
+  }
+  if(g_rf_recover_count_this_hour >= SYNC_RECOVER_MAX_PER_HOUR) {
+    return;
+  }
+
+  if((g_rf_cfg_rx_fail_streak < RF_ERR_STREAK_TH) &&
+     (g_rf_cfg_tx_fail_streak < RF_ERR_STREAK_TH) &&
+     (g_rf_send_fail_streak < RF_ERR_STREAK_TH) &&
+     (g_rf_poll_err_streak < RF_ERR_STREAK_TH)) {
+    return;
+  }
+
+  RF_Link_Init();
+  g_rf_initialized = 1U;
+  RF_Link_ConfigRx(RF_RX_CHANNEL);
+  g_rf_mode = 0;
+  g_rf_cfg_rx_fail_streak = 0U;
+
+  g_sync_state = SYNC_STATE_ACQUIRE;
+  g_sync_forced_scan_mode = 0U;
+  g_sync_probe_window_mode = 0U;
+  g_sync_forced_sleep_counter = 0U;
+  g_sync_forced_probe_counter = 0U;
+  g_sync_forced_probe_miss_rounds = 0U;
+  g_sync_forced_probe_hit_in_round = 0U;
+  g_sync_force_acq_cycles_left = SYNC_FORCE_ACQ_RX_CYCLES;
+  g_sync_recover_fail_rounds = 0U;
+  g_sync_dither_idx = 0U;
+
+  g_last_valid_rx_tick = now;
+  g_rf_recover_cooldown_until = now + SYNC_RECOVER_COOLDOWN_MS;
+  g_rf_recover_count_total++;
+  g_rf_recover_count_this_hour++;
+
+  DebugPrint("[RF-RECOVER] reinit + force ACQ\r\n");
+#if LOG_SYNC_OBSERVE_ENABLE && LOG_SYNC_OBS_RECOVER_ENABLE
+  DebugPrint("[OBS][RECOVER] no_valid_ms=");
+  DebugPrintDec((uint16_t)(obs_no_valid_ms > 65535U ? 65535U : obs_no_valid_ms));
+  DebugPrint(" rounds=");
+  DebugPrintDec(obs_recover_rounds);
+  DebugPrint(" st_rx=");
+  DebugPrintDec(g_rf_cfg_rx_fail_streak);
+  DebugPrint(" st_tx=");
+  DebugPrintDec(g_rf_cfg_tx_fail_streak);
+  DebugPrint(" st_send=");
+  DebugPrintDec(g_rf_send_fail_streak);
+  DebugPrint(" st_poll=");
+  DebugPrintDec(g_rf_poll_err_streak);
+  DebugPrint(" hour=");
+  DebugPrintDec(g_rf_recover_count_this_hour);
+  DebugPrint("/max");
+  DebugPrintDec(SYNC_RECOVER_MAX_PER_HOUR);
+  DebugPrint(" total=");
+  DebugPrintDec((uint16_t)(g_rf_recover_count_total & 0xFFFFU));
+  DebugPrint("\r\n");
+#endif
 }
 
 /**
@@ -1700,12 +1911,15 @@ static uint8_t Read_ADC1_DualChannel(uint32_t* solar_raw, uint32_t* batt_raw)
   /* 扫描模式下需要“每个转换都 Poll 一次”再 GetValue，不能只 Poll 一次就连读两次寄存器。
    * 否则两个通道很容易读到同一个值（你日志里 solar==batt 的现象）。
    */
-  for(uint32_t i = 0; i < 2U; i++) {
-    if (HAL_ADC_PollForConversion(&hadc1, 100) != HAL_OK) {
-      HAL_ADC_Stop(&hadc1);
-      return 1;
+  {
+    uint32_t i;
+    for(i = 0; i < 2U; i++) {
+      if (HAL_ADC_PollForConversion(&hadc1, 100) != HAL_OK) {
+        HAL_ADC_Stop(&hadc1);
+        return 1;
+      }
+      adc_values[i] = (uint32_t)HAL_ADC_GetValue(&hadc1);
     }
-    adc_values[i] = (uint32_t)HAL_ADC_GetValue(&hadc1);
   }
   
   /* 停止ADC */

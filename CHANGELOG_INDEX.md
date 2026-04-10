@@ -70,6 +70,8 @@
 | v2.15.1 | 2026-04-09 | 强制巡检参数温和化：改为 18 关 RX + 4 开 RX；新增“连续 2 轮探测失败才回睡眠”机制，减少过早回睡导致的长时间错开；DIAG 新增 `pm` 轮次计数便于观测 | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h, CHANGELOG_INDEX.md |
 | v2.15.2 | 2026-04-09 | FSCAN 稳定性与文档对齐：进入 FSCAN 清零历史计数、FSCAN 期间屏蔽 bad-phase 退锁抖动；新增“今日改进点”文档并按差异化方式更新规格书同步章节 | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h, docs/IMPROVEMENTS_2026-04-09_SYNC_STRATEGY.md, SPECIFICATION_v2.0.0.md, CHANGELOG_INDEX.md |
 | v2.15.3 | 2026-04-09 | ADC 参考与阈值一键双档宏化：新增 `ADC_REF_SELECT_3V0`（0=3.3V/1=3.0V）单宏切换；阈值改为 mV 定义并自动换算 RAW，所有电压显示统一走 `ADC_MV_FROM_RAW()`，避免手工改阈值带来的错配风险 | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h, CHANGELOG_INDEX.md, docs/IMPROVEMENTS_2026-04-09_SYNC_STRATEGY.md |
+| v2.16.0 | 2026-04-10 | 同步死角分层恢复落地：增加 LOCK 长期无包强制 ACQ、PROBE 偏移递进（20~40ms）、探测窗口延长、底层异常证据计数与 RF 最后手段恢复（含冷却/限次） | STM32c011f6p6-xl2400t/Core/Src/main.c, CHANGELOG_INDEX.md, docs/IMPROVEMENTS_2026-04-10_SYNC_RECOVERY.md |
+| v2.16.3 | 2026-04-10 | 观测增强与编译兼容修复：新增 `[OBS]` 分组日志总开关（DITHER/RESCUE/RECOVER）、自救累计计数与触发条件打印；修复将 `void` 接口误作返回值判断导致的编译错误，并恢复 C89 兼容写法 | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h, CHANGELOG_INDEX.md, docs/IMPROVEMENTS_2026-04-10_OBSERVABILITY_TUNING.md |
 
 ---
 
