@@ -41,7 +41,7 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-#define FW_VERSION "v2.16.3-ObsTune"
+#define FW_VERSION "v2.16.5-PeerSync200"
 
 /* USER CODE END EC */
 

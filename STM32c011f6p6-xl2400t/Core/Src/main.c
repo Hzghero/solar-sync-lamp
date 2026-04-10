@@ -93,6 +93,17 @@
 #define SYNC_TX_DITHER_OFFSET_MS          10U   /* 兼容旧逻辑的基础偏移 */
 #define SYNC_TX_DITHER_PROBE_ONLY          1U
 
+/* 200节点同构无主优化：发送稀疏化（少说多听）
+ * 说明：
+ * - ACQ/FSCAN阶段保持较高发送积极度，便于快速收敛；
+ * - LOCK阶段降低发送概率，减少“同步后同相对撞”；
+ * - 收到有效包后，短暂静默若干周期，降低“刚收到就回喷”冲突。
+ */
+#define SYNC_TX_SPARSE_ENABLE               1U
+#define SYNC_TX_PROB_ACQ_PERCENT          100U   /* ACQ/FSCAN：发送概率（0~100） */
+#define SYNC_TX_PROB_LOCK_PERCENT          20U   /* LOCK：发送概率（0~100） */
+#define SYNC_TX_SILENT_AFTER_RX_CYCLES      1U   /* 收到有效包后静默发送周期数 */
+
 /* 探测窗口递进偏移：用于打破“固定相位互撞”的死角
  * 偏移序列：20/25/30/35/40ms，命中有效包后回到 20ms 起点。
  */
@@ -219,6 +230,22 @@
 /* 同步调度可观测性：每 N 个新周期打印一次“本周期是否开 RX” */
 #define SYNC_SCHEDULE_PRINT_EVERY_N 1U
 
+/* 200节点同构无主优化：接收择优与可信采纳
+ * 说明：
+ * - 首包不一定立刻采纳：偏差较大时先暂存候选；
+ * - 若后续包与候选一致，再采纳，减少异常包误拉；
+ * - 对超大偏差包直接拒收，避免相位被强行拉偏。
+ */
+#define SYNC_RX_SELECT_FIRST_VALID_ONLY      1U   /* 兼容开关：同周期只最终采纳一组参考 */
+#define SYNC_RX_ACCEPT_MAX_DIFF_MS          90U   /* 可采纳最大相位差（超过则拒收） */
+#define SYNC_RX_ACCEPT_IMMEDIATE_MS         18U   /* 首包立即采纳阈值（偏差小则直接用） */
+#define SYNC_RX_CONSISTENCY_DIFF_MS         12U   /* 双包一致性阈值（候选与确认包差异） */
+
+/* 200节点同构无主优化：动态调相步长（稳态更稳、失步可回） */
+#define SYNC_ADJ_SMALL_ERR_MS               10U   /* 小误差区间上限 */
+#define SYNC_ADJ_MID_ERR_MS                 30U   /* 中误差区间上限 */
+#define SYNC_ADJ_STEP_CAP_MS                20U   /* 单次调相最大步长上限 */
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -275,6 +302,13 @@ static uint8_t g_sync_dither_idx = 0;                /* 递进偏移索引：0..
 static uint8_t g_sync_force_acq_cycles_left = 0;     /* 协议自救：强制 ACQUIRE 连续 RX 剩余周期 */
 static uint8_t g_sync_recover_fail_rounds = 0;       /* 协议自救失败轮次计数 */
 static uint32_t g_sync_rescue_count_total = 0;       /* 观测计数：协议自救总触发次数（仅统计） */
+
+/* 200节点同构无主优化：发送稀疏化与接收择优状态 */
+static uint8_t g_sync_tx_enable_this_cycle = 1;      /* 本周期是否允许发送（1=允许，0=禁止） */
+static uint8_t g_sync_tx_silent_cycles_left = 0;     /* 收到有效包后的发送静默剩余周期 */
+static uint8_t g_sync_rx_select_done_this_cycle = 0; /* 本周期是否已采纳过有效包（首包择优） */
+static uint8_t g_sync_rx_candidate_valid = 0;        /* 本周期是否已有候选参考包 */
+static uint16_t g_sync_rx_candidate_phase_ms = 0;    /* 候选参考包的相位 */
 
 /* RF 底层健康统计：仅用于“是否需要底层恢复”的判据，不直接影响正常收发流程 */
 static uint32_t g_last_valid_rx_tick = 0;            /* 最近一次收到有效同步包的时间戳 */
@@ -488,6 +522,11 @@ int main(void)
   g_sync_force_acq_cycles_left = 0;
   g_sync_recover_fail_rounds = 0;
   g_sync_rescue_count_total = 0;
+  g_sync_tx_enable_this_cycle = 1U;
+  g_sync_tx_silent_cycles_left = 0U;
+  g_sync_rx_select_done_this_cycle = 0U;
+  g_sync_rx_candidate_valid = 0U;
+  g_sync_rx_candidate_phase_ms = 0U;
 
   g_last_valid_rx_tick = HAL_GetTick();
   g_rf_cfg_rx_fail_streak = 0;
@@ -621,6 +660,11 @@ int main(void)
           g_sync_dither_idx = 0;
           g_sync_force_acq_cycles_left = 0;
           g_sync_recover_fail_rounds = 0;
+          g_sync_tx_enable_this_cycle = 1U;
+          g_sync_tx_silent_cycles_left = 0U;
+          g_sync_rx_select_done_this_cycle = 0U;
+          g_sync_rx_candidate_valid = 0U;
+          g_sync_rx_candidate_phase_ms = 0U;
           g_last_valid_rx_tick = HAL_GetTick();
           DebugPrint("[SYNC] Night enter -> ACQUIRE\r\n");
         } else {
@@ -1241,9 +1285,34 @@ static uint16_t ParseSyncPacket(const uint8_t *pkt)
 static void Sync_AdjustFromPacket(uint16_t rx_phase_ms)
 {
   int16_t delta = (int16_t)rx_phase_ms - (int16_t)g_phase_ms;
+  int16_t abs_delta = 0;
+  int16_t adj_step = 0;
+
   if(delta > (int16_t)(SYNC_CYCLE_MS / 2)) delta -= SYNC_CYCLE_MS;
   if(delta < -(int16_t)(SYNC_CYCLE_MS / 2)) delta += SYNC_CYCLE_MS;
-  
+
+  abs_delta = (delta >= 0) ? delta : (int16_t)(-delta);
+
+  /* 动态步长：小误差更平滑，大误差更积极，并限制单次最大调相步长 */
+  if(abs_delta <= (int16_t)SYNC_ADJ_SMALL_ERR_MS) {
+    adj_step = delta / 6;
+  } else if(abs_delta <= (int16_t)SYNC_ADJ_MID_ERR_MS) {
+    adj_step = delta / 4;
+  } else {
+    adj_step = delta / 2;
+  }
+
+  if(adj_step > (int16_t)SYNC_ADJ_STEP_CAP_MS) {
+    adj_step = (int16_t)SYNC_ADJ_STEP_CAP_MS;
+  } else if(adj_step < -(int16_t)SYNC_ADJ_STEP_CAP_MS) {
+    adj_step = -(int16_t)SYNC_ADJ_STEP_CAP_MS;
+  }
+
+  /* 避免“有误差但步长被整除为0”导致卡住 */
+  if((adj_step == 0) && (delta != 0)) {
+    adj_step = (delta > 0) ? 1 : -1;
+  }
+
   #if DEBUG_SYNC_VERBOSE
   /* 调试：显示调整前的详细信息 */
   DebugPrint("[ADJ] rx=");
@@ -1259,11 +1328,17 @@ static void Sync_AdjustFromPacket(uint16_t rx_phase_ms)
     DebugPrintDec((uint16_t)(-delta));
   }
   DebugPrint(" adjust=");
-  DebugPrintDec((uint16_t)(delta / 4));
+  if(adj_step >= 0) {
+    DebugPrint("+");
+    DebugPrintDec((uint16_t)adj_step);
+  } else {
+    DebugPrint("-");
+    DebugPrintDec((uint16_t)(-adj_step));
+  }
   DebugPrint("ms\r\n");
 #endif
 
-  g_phase_ms = (uint16_t)((int16_t)g_phase_ms + delta / 4);
+  g_phase_ms = (uint16_t)((int16_t)g_phase_ms + adj_step);
   if(g_phase_ms >= SYNC_CYCLE_MS) g_phase_ms -= SYNC_CYCLE_MS;
 }
 
@@ -1285,7 +1360,41 @@ static void Sync_MainLoop(void)
 
   /* 每个新周期只调度一次“本周期是否开启 RX” */
   if(g_sync_last_sched_cycle != g_cycle) {
+    uint8_t tx_prob = SYNC_TX_PROB_ACQ_PERCENT;
+    uint8_t tx_allow = 1U;
+    uint16_t tx_rand = 0U;
+
     g_sync_last_sched_cycle = g_cycle;
+    g_sync_rx_select_done_this_cycle = 0U; /* 新周期开始，清空“首包已采纳”标记 */
+    g_sync_rx_candidate_valid = 0U;        /* 新周期开始，清空候选参考包 */
+    g_sync_rx_candidate_phase_ms = 0U;
+
+#if SYNC_TX_SPARSE_ENABLE
+    /* 发送稀疏化：默认ACQ/FSCAN高积极度，LOCK低积极度 */
+    if((g_sync_forced_scan_mode == 0U) && (g_sync_state == SYNC_STATE_LOCKED_SPARSE)) {
+      tx_prob = SYNC_TX_PROB_LOCK_PERCENT;
+    } else {
+      tx_prob = SYNC_TX_PROB_ACQ_PERCENT;
+    }
+
+    /* 收到有效包后的静默期：禁止发送，避免“收后回喷” */
+    if(g_sync_tx_silent_cycles_left > 0U) {
+      g_sync_tx_silent_cycles_left--;
+      tx_allow = 0U;
+    } else {
+      if(tx_prob >= 100U) {
+        tx_allow = 1U;
+      } else {
+        tx_rand = (uint16_t)((((uint16_t)(HAL_GetTick() & 0xFFU)) +
+                              ((uint16_t)(g_cycle & 0xFFU) * 17U) +
+                              ((uint16_t)g_phase_ms * 13U)) % 100U);
+        tx_allow = (tx_rand < tx_prob) ? 1U : 0U;
+      }
+    }
+    g_sync_tx_enable_this_cycle = tx_allow;
+#else
+    g_sync_tx_enable_this_cycle = 1U;
+#endif
 
 #if SYNC_FORCED_SCAN_ENABLE
     /* 上电初期：先连续开 RX 若干周期，尽快捕获同步包 */
@@ -1440,6 +1549,12 @@ static void Sync_MainLoop(void)
       } else {
         DebugPrint("OFF");
       }
+      DebugPrint(" tx=");
+      if(g_sync_tx_enable_this_cycle) {
+        DebugPrint("ON");
+      } else {
+        DebugPrint("OFF");
+      }
       DebugPrint("\r\n");
     }
 #endif
@@ -1504,7 +1619,7 @@ static void Sync_MainLoop(void)
   }
 #endif
 
-  if (g_cycle != g_last_tx_cycle && g_phase_ms >= tx_time_ms && g_phase_ms < (tx_time_ms + 50U)) {
+  if (g_sync_tx_enable_this_cycle && g_cycle != g_last_tx_cycle && g_phase_ms >= tx_time_ms && g_phase_ms < (tx_time_ms + 50U)) {
     /* 切换到 TX 模式，频道 76 */
     if (g_rf_mode != 1) {
       RF_Link_ConfigTx(RF_TX_CHANNEL);
@@ -1562,10 +1677,12 @@ static void Sync_MainLoop(void)
     if (RF_Link_PollReceive(RF_RX_Buf, &rx_len) == 1) {
       uint16_t rx_phase_ms = ParseSyncPacket(RF_RX_Buf);
       if (rx_phase_ms < SYNC_CYCLE_MS) {
-        /* 计算相位差异（规范化到 [-T/2, +T/2]） */
-        phase_diff = (int16_t)rx_phase_ms - (int16_t)g_phase_ms;
-        if(phase_diff > (int16_t)(SYNC_CYCLE_MS / 2)) phase_diff -= SYNC_CYCLE_MS;
-        if(phase_diff < -(int16_t)(SYNC_CYCLE_MS / 2)) phase_diff += SYNC_CYCLE_MS;
+        int16_t cur_diff = (int16_t)rx_phase_ms - (int16_t)g_phase_ms;
+        uint16_t abs_cur_diff = 0U;
+
+        if(cur_diff > (int16_t)(SYNC_CYCLE_MS / 2)) cur_diff -= SYNC_CYCLE_MS;
+        if(cur_diff < -(int16_t)(SYNC_CYCLE_MS / 2)) cur_diff += SYNC_CYCLE_MS;
+        abs_cur_diff = (cur_diff >= 0) ? (uint16_t)cur_diff : (uint16_t)(-cur_diff);
 
 #if DEBUG_SYNC_VERBOSE
         DebugPrint("RX: ph=");
@@ -1573,26 +1690,67 @@ static void Sync_MainLoop(void)
         DebugPrint(" local=");
         DebugPrintDec(g_phase_ms);
         DebugPrint(" diff=");
-        if(phase_diff >= 0) {
+        if(cur_diff >= 0) {
           DebugPrint("+");
-          DebugPrintDec((uint16_t)phase_diff);
+          DebugPrintDec((uint16_t)cur_diff);
         } else {
           DebugPrint("-");
-          DebugPrintDec((uint16_t)(-phase_diff));
+          DebugPrintDec((uint16_t)(-cur_diff));
         }
         DebugPrint("\r\n");
 #else
         DebugPrint("RX\r\n");
 #endif
 
-        /* 相位调整 */
-        Sync_AdjustFromPacket(rx_phase_ms);
-        rx_got_valid = 1;
-#if SYNC_FORCED_SCAN_ENABLE
-        if(g_sync_forced_scan_mode == 1U && g_sync_probe_window_mode == 1U) {
-          g_sync_forced_probe_hit_in_round = 1U;
-        }
+        if(abs_cur_diff <= SYNC_RX_ACCEPT_MAX_DIFF_MS) {
+#if SYNC_RX_SELECT_FIRST_VALID_ONLY
+          if(g_sync_rx_select_done_this_cycle == 0U)
 #endif
+          {
+            uint8_t accept_now = 0U;
+
+            if(abs_cur_diff <= SYNC_RX_ACCEPT_IMMEDIATE_MS) {
+              /* 偏差很小：首包可直接采纳 */
+              accept_now = 1U;
+            } else if(g_sync_rx_candidate_valid == 0U) {
+              /* 偏差偏大：先缓存候选，等待后续包确认一致性 */
+              g_sync_rx_candidate_valid = 1U;
+              g_sync_rx_candidate_phase_ms = rx_phase_ms;
+            } else {
+              int16_t cand_diff = (int16_t)rx_phase_ms - (int16_t)g_sync_rx_candidate_phase_ms;
+              uint16_t abs_cand_diff = 0U;
+
+              if(cand_diff > (int16_t)(SYNC_CYCLE_MS / 2)) cand_diff -= SYNC_CYCLE_MS;
+              if(cand_diff < -(int16_t)(SYNC_CYCLE_MS / 2)) cand_diff += SYNC_CYCLE_MS;
+              abs_cand_diff = (cand_diff >= 0) ? (uint16_t)cand_diff : (uint16_t)(-cand_diff);
+
+              if(abs_cand_diff <= SYNC_RX_CONSISTENCY_DIFF_MS) {
+                /* 双包一致：采纳较新的参考 */
+                accept_now = 1U;
+              } else {
+                /* 双包不一致：更新候选，继续等待下一包 */
+                g_sync_rx_candidate_phase_ms = rx_phase_ms;
+              }
+            }
+
+            if(accept_now) {
+              /* 采纳后再计算最终相位差，保证与调整输入一致 */
+              phase_diff = (int16_t)rx_phase_ms - (int16_t)g_phase_ms;
+              if(phase_diff > (int16_t)(SYNC_CYCLE_MS / 2)) phase_diff -= SYNC_CYCLE_MS;
+              if(phase_diff < -(int16_t)(SYNC_CYCLE_MS / 2)) phase_diff += SYNC_CYCLE_MS;
+
+              Sync_AdjustFromPacket(rx_phase_ms);
+              rx_got_valid = 1;
+              g_sync_rx_select_done_this_cycle = 1U;
+              g_sync_rx_candidate_valid = 0U;
+#if SYNC_FORCED_SCAN_ENABLE
+              if(g_sync_forced_scan_mode == 1U && g_sync_probe_window_mode == 1U) {
+                g_sync_forced_probe_hit_in_round = 1U;
+              }
+#endif
+            }
+          }
+        }
       }
     }
   }
@@ -1607,6 +1765,10 @@ static void Sync_MainLoop(void)
       g_sync_recover_fail_rounds = 0U;
       g_sync_dither_idx = 0U;
       g_rf_poll_err_streak = 0U;
+#if SYNC_TX_SPARSE_ENABLE
+      /* 收到有效包后，静默若干周期，减少同相回喷导致的碰撞 */
+      g_sync_tx_silent_cycles_left = SYNC_TX_SILENT_AFTER_RX_CYCLES;
+#endif
 
       if(abs_err <= SYNC_LOCK_ERR_TH_MS) {
         if(g_sync_good_count < 255U) g_sync_good_count++;
