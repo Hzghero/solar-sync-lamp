@@ -93,11 +93,12 @@
 #define SYNC_TX_DITHER_OFFSET_MS          10U   /* 兼容旧逻辑的基础偏移 */
 #define SYNC_TX_DITHER_PROBE_ONLY          1U
 
-/* 200节点同构无主优化：发送稀疏化（少说多听）
- * 说明：
+/* v2.16.7 中文注释补充：200节点同构无主优化——发送稀疏化（少说多听）
+ * 作用说明：
  * - ACQ/FSCAN阶段保持较高发送积极度，便于快速收敛；
  * - LOCK阶段降低发送概率，减少“同步后同相对撞”；
  * - 收到有效包后，短暂静默若干周期，降低“刚收到就回喷”冲突。
+ * 测试关注：观察调度日志中的 tx=ON/OFF 与 RX命中率是否同步改善。
  */
 #define SYNC_TX_SPARSE_ENABLE               1U
 #define SYNC_TX_PROB_ACQ_PERCENT          100U   /* ACQ/FSCAN：发送概率（0~100） */
@@ -230,18 +231,19 @@
 /* 同步调度可观测性：每 N 个新周期打印一次“本周期是否开 RX” */
 #define SYNC_SCHEDULE_PRINT_EVERY_N 1U
 
-/* 200节点同构无主优化：接收择优与可信采纳
- * 说明：
+/* v2.16.7 中文注释补充：200节点同构无主优化——接收择优与可信采纳
+ * 作用说明：
  * - 首包不一定立刻采纳：偏差较大时先暂存候选；
  * - 若后续包与候选一致，再采纳，减少异常包误拉；
  * - 对超大偏差包直接拒收，避免相位被强行拉偏。
+ * 测试关注：观察 [ADJ]/RX 日志中大偏差拒收后是否减少相位跳变。
  */
 #define SYNC_RX_SELECT_FIRST_VALID_ONLY      1U   /* 兼容开关：同周期只最终采纳一组参考 */
 #define SYNC_RX_ACCEPT_MAX_DIFF_MS          90U   /* 可采纳最大相位差（超过则拒收） */
 #define SYNC_RX_ACCEPT_IMMEDIATE_MS         18U   /* 首包立即采纳阈值（偏差小则直接用） */
 #define SYNC_RX_CONSISTENCY_DIFF_MS         12U   /* 双包一致性阈值（候选与确认包差异） */
 
-/* 200节点同构无主优化：动态调相步长（稳态更稳、失步可回） */
+/* v2.16.7 中文注释补充：200节点同构无主优化——动态调相步长（稳态更稳、失步可回） */
 #define SYNC_ADJ_SMALL_ERR_MS               10U   /* 小误差区间上限 */
 #define SYNC_ADJ_MID_ERR_MS                 30U   /* 中误差区间上限 */
 #define SYNC_ADJ_STEP_CAP_MS                20U   /* 单次调相最大步长上限 */

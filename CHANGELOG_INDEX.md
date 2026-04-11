@@ -75,6 +75,7 @@
 | v2.16.4 | 2026-04-10 | 新增《200节点同构无主同步架构建议》文档：明确扎堆/线形/环形三拓扑适应性评估，定义“少说多听+接收择优+限速收敛+分层恢复”的无主架构原则与后续实施顺序 | docs/ARCHITECTURE_2026-04-10_200_NODE_PEER_SYNC.md, CHANGELOG_INDEX.md |
 | v2.16.5 | 2026-04-10 | 第二阶段同步稳定性改造：新增“可信接收择优”（首包小偏差直采纳、候选双包一致性确认、超大偏差拒收）与“动态调相步长+单次步长限幅”，降低波形相位漂移与多参考互拉 | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h, CHANGELOG_INDEX.md |
 | v2.16.6 | 2026-04-10 | 当日总结文档：汇总 Stage1/Stage2 改造项、版本与索引、现场观测结论（频繁跳动已明显改善，当前约28ms固定错位）及次日参数调优顺序 | docs/IMPROVEMENTS_2026-04-10_PEER_SYNC_STAGE1_STAGE2_SUMMARY.md, CHANGELOG_INDEX.md |
+| v2.16.7 | 2026-04-11 | 版本与注释补充：FW_VERSION 升级为 `v2.16.7-PeerSync200-Commented`，对 200 节点同步关键策略（发送稀疏化、接收择优、动态调相）补充中文“修改点/作用/测试关注”注释，便于联调与验收 | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h, CHANGELOG_INDEX.md |
 | v2.16.5 | 2026-04-10 | 按200节点无主架构执行第一阶段改造：新增发送稀疏化（ACQ/LOCK差异化发送概率+收包后静默周期）与接收择优（每周期首包采纳），并在调度日志中增加tx开关观测项 | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h, CHANGELOG_INDEX.md |
 
 ---
