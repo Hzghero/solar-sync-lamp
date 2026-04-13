@@ -38,6 +38,10 @@ void RF_Link_Sleep(void);
  */
 int RF_Link_Send(const uint8_t *buf, uint8_t len);
 
+/* 最近一次发送状态：0=NONE/超时，0x20=TX_DS，0x10=MAX_RT */
+uint8_t RF_Link_GetLastTxStatus(void);
+
+
 /**
  * 轮询接收（非阻塞）。
  *

@@ -72,6 +72,7 @@
 | v2.15.3 | 2026-04-09 | ADC 参考与阈值一键双档宏化：新增 `ADC_REF_SELECT_3V0`（0=3.3V/1=3.0V）单宏切换；阈值改为 mV 定义并自动换算 RAW，所有电压显示统一走 `ADC_MV_FROM_RAW()`，避免手工改阈值带来的错配风险 | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h, CHANGELOG_INDEX.md, docs/IMPROVEMENTS_2026-04-09_SYNC_STRATEGY.md |
 | v2.16.0 | 2026-04-10 | 同步死角分层恢复落地：增加 LOCK 长期无包强制 ACQ、PROBE 偏移递进（20~40ms）、探测窗口延长、底层异常证据计数与 RF 最后手段恢复（含冷却/限次） | STM32c011f6p6-xl2400t/Core/Src/main.c, CHANGELOG_INDEX.md, docs/IMPROVEMENTS_2026-04-10_SYNC_RECOVERY.md |
 | v2.16.3 | 2026-04-10 | 观测增强与编译兼容修复：新增 `[OBS]` 分组日志总开关（DITHER/RESCUE/RECOVER）、自救累计计数与触发条件打印；修复将 `void` 接口误作返回值判断导致的编译错误，并恢复 C89 兼容写法 | STM32c011f6p6-xl2400t/Core/Src/main.c, STM32c011f6p6-xl2400t/Core/Inc/main.h, CHANGELOG_INDEX.md, docs/IMPROVEMENTS_2026-04-10_OBSERVABILITY_TUNING.md |
+| v2.16.4 | 2026-04-10 | 新增《200节点同构无主同步架构建议》文档：明确扎堆/线形/环形三拓扑适应性评估，定义“少说多听+接收择优+限速收敛+分层恢复”的无主架构原则与后续实施顺序 | docs/ARCHITECTURE_2026-04-10_200_NODE_PEER_SYNC.md, CHANGELOG_INDEX.md |
 
 ---
 

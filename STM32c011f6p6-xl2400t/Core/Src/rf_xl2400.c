@@ -4,6 +4,7 @@
 /* 内部发送/接收缓冲区，长度与 Demo 保持一致 */
 static uint8_t rf_tx_buf[RF_PACKET_SIZE];
 static uint8_t rf_rx_buf[RF_PACKET_SIZE];
+static uint8_t rf_last_tx_status = 0U;
 
 void RF_Link_Init(void)
 {
@@ -32,6 +33,7 @@ void RF_Link_Sleep(void)
 int RF_Link_Send(const uint8_t *buf, uint8_t len)
 {
   uint8_t i;
+  uint8_t st;
   if (buf == NULL) return -1;
 
   /* 复制并按需截断/填充到固定长度 8 字节 */
@@ -43,8 +45,10 @@ int RF_Link_Send(const uint8_t *buf, uint8_t len)
     }
   }
 
-  /* 调用 Demo 的发送函数，返回 0x20 表示 TX_DS 成功 */
-  return (RF_TX_Data(rf_tx_buf) == 0x20) ? 0 : -2;
+  /* 返回值语义：0x20=TX_DS成功，0x10=MAX_RT失败，0=超时/未知 */
+  st = RF_TX_Data(rf_tx_buf);
+  rf_last_tx_status = st;
+  return (st == 0x20U) ? 0 : -2;
 }
 
 int RF_Link_PollReceive(uint8_t *buf, uint8_t *len)
@@ -61,4 +65,11 @@ int RF_Link_PollReceive(uint8_t *buf, uint8_t *len)
   }
 
   return 0;
+}
+
+
+
+uint8_t RF_Link_GetLastTxStatus(void)
+{
+  return rf_last_tx_status;
 }

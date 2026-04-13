@@ -1,5 +1,10 @@
 #include "XL2400T.h"
 
+/* 四步模板 Step2：发送后等待时间 A/B 测试（默认保持 100ms） */
+#ifndef RF_TX_POST_DELAY_MS
+#define RF_TX_POST_DELAY_MS 10U
+#endif
+
 /* GPIO init for 3-wire software SPI */
 static void RF_SPI_GPIO_Init(void)
 {
@@ -283,6 +288,7 @@ void XL2400T_Init(void)
 
 unsigned char RF_TX_Data(unsigned char* tx_buff)
 {
+  unsigned char st;
   RF_Refresh_State();
 
   RF_Write_Buff(W_TX_PLOAD, tx_buff, RF_PACKET_SIZE);
@@ -290,15 +296,39 @@ unsigned char RF_TX_Data(unsigned char* tx_buff)
   RF_CE_High();
   RF_DelayUs(100);
   RF_CE_Low();
-  RF_DelayMs(100);
 
-  if (RF_SPI_Read_Reg(R_REGISTER + RF_STATUS) & TX_DS) {
+#if RF_TX_WAIT_USE_STATUS_POLL
+  {
+    uint32_t start = HAL_GetTick();
+    while ((HAL_GetTick() - start) < RF_TX_STATUS_TIMEOUT_MS) {
+      st = RF_SPI_Read_Reg(R_REGISTER + RF_STATUS);
+      if (st & TX_DS) {
+        RF_Refresh_State();
+        return 0x20; /* TX_DS */
+      }
+      if (st & MAX_RT) {
+        RF_Refresh_State();
+        return 0x10; /* MAX_RT */
+      }
+    }
+    RF_Refresh_State();
+    return 0; /* timeout */
+  }
+#else
+  RF_DelayMs((unsigned char)RF_TX_POST_DELAY_MS);
+
+  st = RF_SPI_Read_Reg(R_REGISTER + RF_STATUS);
+  if (st & TX_DS) {
     RF_Refresh_State();
     return 0x20;
-  } else {
-    RF_Refresh_State();
-    return 0;
   }
+  if (st & MAX_RT) {
+    RF_Refresh_State();
+    return 0x10;
+  }
+  RF_Refresh_State();
+  return 0;
+#endif
 }
 
 unsigned char RF_RX_Data(unsigned char* rx_buff)

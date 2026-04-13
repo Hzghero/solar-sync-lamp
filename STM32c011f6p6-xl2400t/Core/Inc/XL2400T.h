@@ -130,4 +130,12 @@ unsigned char RF_RX_Data(unsigned char* rx_buff);
 #define RF_BAUD             C_DR_250K
 #define RF_PACKET_SIZE      8
 
+/* TX发送完成等待策略（实验宏）
+ * RF_TX_WAIT_USE_STATUS_POLL=0: 旧行为，固定延时 RF_TX_POST_DELAY_MS
+ * RF_TX_WAIT_USE_STATUS_POLL=1: 轮询 TX_DS/MAX_RT，命中即返回，超时返回0
+ */
+#define RF_TX_WAIT_USE_STATUS_POLL   1U
+#define RF_TX_POST_DELAY_MS          10U
+#define RF_TX_STATUS_TIMEOUT_MS      12U
+
 #endif /* __XL2400T_H */
