@@ -49,7 +49,7 @@
 #define RF_RX_CHANNEL       75U     /* XL2400T RX 频道 75 (2475 MHz) - 相邻频道避免自干扰 */
 
 /* 同步省电策略参数：锁定后跨周期打开接收，失锁后回退连续接收 */
-#define SYNC_RX_EVERY_N_CYCLES         4U   /* 锁定后每4个周期开1次接收 */
+#define SYNC_RX_EVERY_N_CYCLES         2U   /* 中等强度调优：锁定后每2个周期开1次接收，提升首包命中 */
 #define SYNC_LOCK_ERR_TH_MS           20U   /* 锁定判据：相位误差阈值 */
 #define SYNC_LOCK_NEED_GOOD_COUNT      5U   /* 常规模式：连续良好次数达到后进入锁定态 */
 #define SYNC_UNLOCK_ERR_TH_MS         60U   /* 失锁判据：相位误差阈值 */
@@ -80,18 +80,18 @@
  */
 #define SYNC_FORCED_SCAN_ENABLE            1U
 #define SYNC_BOOT_ACQ_CYCLES               5U
-#define SYNC_FORCED_SLEEP_CYCLES          18U   /* 温和版：关RX窗口缩短，减少“长时间错开”体感 */
-#define SYNC_FORCED_PROBE_RX_CYCLES        5U   /* 探测窗口连续开RX周期数（增强命中概率） */
-#define SYNC_FORCED_PROBE_MISS_ROUNDS_TO_SLEEP 2U /* 连续探测失败多少轮后才回到关RX窗口 */
+#define SYNC_FORCED_SLEEP_CYCLES           8U   /* 中等强度调优：缩短关RX窗口，加快退出FSCAN */
+#define SYNC_FORCED_PROBE_RX_CYCLES        8U   /* 中等强度调优：拉长探测窗口，提升首包命中概率 */
+#define SYNC_FORCED_PROBE_MISS_ROUNDS_TO_SLEEP 4U /* 中等强度调优：允许更多探测轮次再回SLEEP，减少来回切换 */
 
 /* TX 偏移探测开关（用于打破长期对撞）
  * - 0: 关闭偏移，TX 固定在 SYNC_TX_TIME_MS
  * - 1: 开启偏移；偏移量由 SYNC_TX_DITHER_OFFSET_MS 指定
  * 若只想在“强制巡检的 PROBE 窗口”使用偏移，可把 SYNC_TX_DITHER_PROBE_ONLY 设为 1。
  */
-#define SYNC_TX_DITHER_ENABLE              1U
+#define SYNC_TX_DITHER_ENABLE              0U
 #define SYNC_TX_DITHER_OFFSET_MS          10U   /* 兼容旧逻辑的基础偏移 */
-#define SYNC_TX_DITHER_PROBE_ONLY          1U
+#define SYNC_TX_DITHER_PROBE_ONLY          0U   /* 450ms反相卡死修复：偏移不再仅限PROBE，常态也参与破对称 */
 
 /* v2.16.7 中文注释补充：200节点同构无主优化——发送稀疏化（少说多听）
  * 作用说明：
@@ -102,8 +102,8 @@
  */
 #define SYNC_TX_SPARSE_ENABLE               1U
 #define SYNC_TX_PROB_ACQ_PERCENT          100U   /* ACQ/FSCAN：发送概率（0~100） */
-#define SYNC_TX_PROB_LOCK_PERCENT          20U   /* LOCK：发送概率（0~100） */
-#define SYNC_TX_SILENT_AFTER_RX_CYCLES      1U   /* 收到有效包后静默发送周期数 */
+#define SYNC_TX_PROB_LOCK_PERCENT         100U   /* LOCK：发送概率（0~100），设为100表示锁定态也每周期都发 */
+#define SYNC_TX_SILENT_AFTER_RX_CYCLES      1U   /* 收到有效包后静默发送周期数：1=短静默，降低“刚收到就回喷”冲突 */
 
 /* 探测窗口递进偏移：用于打破“固定相位互撞”的死角
  * 偏移序列：20/25/30/35/40ms，命中有效包后回到 20ms 起点。
@@ -239,14 +239,15 @@
  * 测试关注：观察 [ADJ]/RX 日志中大偏差拒收后是否减少相位跳变。
  */
 #define SYNC_RX_SELECT_FIRST_VALID_ONLY      1U   /* 兼容开关：同周期只最终采纳一组参考 */
-#define SYNC_RX_ACCEPT_MAX_DIFF_MS          90U   /* 可采纳最大相位差（超过则拒收） */
-#define SYNC_RX_ACCEPT_IMMEDIATE_MS         18U   /* 首包立即采纳阈值（偏差小则直接用） */
-#define SYNC_RX_CONSISTENCY_DIFF_MS         12U   /* 双包一致性阈值（候选与确认包差异） */
+#define SYNC_RX_ACCEPT_MAX_DIFF_MS          90U   /* LOCK态可采纳最大相位差（超过则拒收） */
+#define SYNC_RX_ACCEPT_MAX_DIFF_ACQ_MS     460U   /* 450ms反相卡死修复：ACQ/FSCAN放宽到可接纳半周期差（900/2=450ms） */
+#define SYNC_RX_ACCEPT_IMMEDIATE_MS         12U   /* 首包立即采纳阈值（偏差小则直接用） */
+#define SYNC_RX_CONSISTENCY_DIFF_MS          8U   /* 双包一致性阈值（候选与确认包差异） */
 
 /* v2.16.7 中文注释补充：200节点同构无主优化——动态调相步长（稳态更稳、失步可回） */
 #define SYNC_ADJ_SMALL_ERR_MS               10U   /* 小误差区间上限 */
 #define SYNC_ADJ_MID_ERR_MS                 30U   /* 中误差区间上限 */
-#define SYNC_ADJ_STEP_CAP_MS                20U   /* 单次调相最大步长上限 */
+#define SYNC_ADJ_STEP_CAP_MS                14U   /* 单次调相最大步长上限 */
 
 /* USER CODE END PD */
 
@@ -1393,6 +1394,13 @@ static void Sync_MainLoop(void)
         tx_allow = (tx_rand < tx_prob) ? 1U : 0U;
       }
     }
+    /* 锁定稳定后进一步少说多听：若仍处于收包后静默窗口，强制本周期不发 */
+    if((g_sync_state == SYNC_STATE_LOCKED_SPARSE) && (g_sync_good_count >= 6U)) {
+      if(g_sync_tx_silent_cycles_left > 0U) {
+        tx_allow = 0U;
+      }
+    }
+
     g_sync_tx_enable_this_cycle = tx_allow;
 #else
     g_sync_tx_enable_this_cycle = 1U;
@@ -1425,8 +1433,12 @@ static void Sync_MainLoop(void)
     /* 强制巡检主循环：SLEEP窗口与PROBE窗口交替 */
     else if(g_sync_forced_scan_mode == 1U) {
       if(g_sync_probe_window_mode == 0U) {
-        /* 关RX窗口 */
-        g_sync_rx_open_this_cycle = 0;
+        /* FSCAN-SLEEP 主窗口关RX，但每4周期打一针“保底侦听”，避免长期 rx=OFF 卡死 */
+        if((g_sync_forced_sleep_counter % 4U) == 3U) {
+          g_sync_rx_open_this_cycle = 1U;
+        } else {
+          g_sync_rx_open_this_cycle = 0U;
+        }
         g_sync_sparse_counter = 0;
         if(g_sync_forced_sleep_counter < 255U) g_sync_forced_sleep_counter++;
         if(g_sync_forced_sleep_counter >= SYNC_FORCED_SLEEP_CYCLES) {
@@ -1704,16 +1716,26 @@ static void Sync_MainLoop(void)
         DebugPrint("RX\r\n");
 #endif
 
-        if(abs_cur_diff <= SYNC_RX_ACCEPT_MAX_DIFF_MS) {
+        {
+          uint16_t accept_max_ms = SYNC_RX_ACCEPT_MAX_DIFF_MS;
+          if((g_sync_state == SYNC_STATE_ACQUIRE) || (g_sync_forced_scan_mode == 1U)) {
+            accept_max_ms = SYNC_RX_ACCEPT_MAX_DIFF_ACQ_MS;
+          }
+
+          if(abs_cur_diff <= accept_max_ms) {
 #if SYNC_RX_SELECT_FIRST_VALID_ONLY
-          if(g_sync_rx_select_done_this_cycle == 0U)
+            if(g_sync_rx_select_done_this_cycle == 0U)
 #endif
-          {
+            {
             uint8_t accept_now = 0U;
 
             if(abs_cur_diff <= SYNC_RX_ACCEPT_IMMEDIATE_MS) {
-              /* 偏差很小：首包可直接采纳 */
-              accept_now = 1U;
+              /* 锁定态更严格：小误差才首包直采纳，避免被偶发包牵引 */
+              if((g_sync_state == SYNC_STATE_LOCKED_SPARSE) && (abs_cur_diff > 8U)) {
+                accept_now = 0U;
+              } else {
+                accept_now = 1U;
+              }
             } else if(g_sync_rx_candidate_valid == 0U) {
               /* 偏差偏大：先缓存候选，等待后续包确认一致性 */
               g_sync_rx_candidate_valid = 1U;
@@ -1753,6 +1775,7 @@ static void Sync_MainLoop(void)
             }
           }
         }
+        /* 关闭 accept_max_ms 的局部作用域 */
       }
     }
   }
@@ -1867,6 +1890,7 @@ static void Sync_MainLoop(void)
       }
     }
   }
+}
 }
 
 /* 分层恢复：先协议自救，再底层恢复

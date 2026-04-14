@@ -41,7 +41,7 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-#define FW_VERSION "v2.16.7-PeerSync200-Commented"
+#define FW_VERSION "v2.17.1-PeerSync200-FscanMid"
 
 /* USER CODE END EC */
 

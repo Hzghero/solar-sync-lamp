@@ -283,22 +283,33 @@ void XL2400T_Init(void)
 
 unsigned char RF_TX_Data(unsigned char* tx_buff)
 {
-  RF_Refresh_State();
+  /*
+   * 发送流程说明：
+   * 1) CE 拉高 >=10us 启动一次发射（本驱动给 100us 余量）；
+   * 2) CE 拉低后，芯片在内部完成空口发送；
+   * 3) 轮询 TX_DS，避免旧版固定等待 100ms 带来的长阻塞。
+   */
+  uint16_t wait_us = 0U;
 
+  RF_Refresh_State();
   RF_Write_Buff(W_TX_PLOAD, tx_buff, RF_PACKET_SIZE);
 
+  /* CE 上升沿触发发送，拉低后由硬件继续发送 */
   RF_CE_High();
   RF_DelayUs(100);
   RF_CE_Low();
-  RF_DelayMs(100);
 
-  if (RF_SPI_Read_Reg(R_REGISTER + RF_STATUS) & TX_DS) {
-    RF_Refresh_State();
-    return 0x20;
-  } else {
-    RF_Refresh_State();
-    return 0;
+  /* 最长等待约 3ms（300 * 10us），超时视为失败 */
+  for (wait_us = 0U; wait_us < 300U; wait_us++) {
+    if (RF_SPI_Read_Reg(R_REGISTER + RF_STATUS) & TX_DS) {
+      RF_Refresh_State();
+      return 0x20;
+    }
+    RF_DelayUs(10);
   }
+
+  RF_Refresh_State();
+  return 0;
 }
 
 unsigned char RF_RX_Data(unsigned char* rx_buff)
